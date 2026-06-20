@@ -1,0 +1,66 @@
+services:
+  # --------------------------------------------------------------------------
+  # Redis — message queue backend
+  # --------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --save 60 1 --loglevel warning
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # --------------------------------------------------------------------------
+  # MQ consumer — processes requests from Redis, runs the LangGraph workflow
+  # --------------------------------------------------------------------------
+  consumer:
+    build: .
+    restart: unless-stopped
+    command: python -m app.services.mq.runner
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      MQ_ENABLED: "true"
+      REDIS_URL: redis://redis:6379
+      # Ollama runs on the host — use host.docker.internal on Mac/Windows Docker Desktop
+      OLLAMA_BASE_URL: http://host.docker.internal:11434
+      SANDBOX_ROOT: /app/sandbox
+      SQLITE_DB_PATH: /app/data/workflow.db
+      LOG_LEVEL: INFO
+    volumes:
+      - ./sandbox:/app/sandbox
+      - db_data:/app/data
+
+  # --------------------------------------------------------------------------
+  # FastAPI UI — serves the web interface and the /api/* endpoints
+  # --------------------------------------------------------------------------
+  ui:
+    build: .
+    restart: unless-stopped
+    command: uvicorn app.ui.api:app --host 0.0.0.0 --port 8080
+    ports:
+      - "8080:8080"
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      MQ_ENABLED: "true"
+      REDIS_URL: redis://redis:6379
+      OLLAMA_BASE_URL: http://host.docker.internal:11434
+      SANDBOX_ROOT: /app/sandbox
+      SQLITE_DB_PATH: /app/data/workflow.db
+      LOG_LEVEL: INFO
+    volumes:
+      - ./sandbox:/app/sandbox
+      - db_data:/app/data
+
+volumes:
+  redis_data:
+  db_data:

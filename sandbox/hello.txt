@@ -1,0 +1,4 @@
+Hello from the sandbox!
+
+This is the default file the agent sees when you ask it to list or read files.
+Drop any files you want the agent to work with into this sandbox/ directory.

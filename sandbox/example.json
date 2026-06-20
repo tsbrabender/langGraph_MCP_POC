@@ -1,0 +1,5 @@
+{
+  "project": "langgraph-mcp-poc",
+  "description": "Local-first LangGraph + FastMCP + Ollama agent",
+  "tools": ["list_files", "read_file", "search_files", "summarize_file", "extract_metadata"]
+}

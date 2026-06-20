@@ -1,0 +1,2 @@
+This file is nested inside a subdirectory.
+It is used to test recursive glob patterns such as '**/*.txt'.

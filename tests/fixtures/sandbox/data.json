@@ -1,0 +1,9 @@
+{
+  "project": "langgraph-mcp-poc",
+  "version": "0.1.0",
+  "tags": ["langgraph", "mcp", "ollama"],
+  "config": {
+    "sandbox_enabled": true,
+    "max_results": 500
+  }
+}
