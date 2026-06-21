@@ -26,5 +26,8 @@ class GraphState(TypedDict, total=False):
     # --- Error propagation ---
     error: str                 # Set by any node on failure; triggers error routing
 
+    # --- LLM model override ---
+    model: str                  # Per-request Ollama model name; falls back to settings default when absent
+
     # --- Metadata ---
     metadata: dict[str, Any]   # request_id, timestamps, etc.

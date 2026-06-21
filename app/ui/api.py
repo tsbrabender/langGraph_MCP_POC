@@ -47,6 +47,7 @@ _STATIC_DIR = Path(__file__).parent / "static"
 
 class ChatRequest(BaseModel):
     user_input: str
+    model: str | None = None  # Ollama model name; falls back to OLLAMA_MODEL env / config default
 
 
 class ChatResponse(BaseModel):
@@ -57,6 +58,11 @@ class ChatResponse(BaseModel):
     final_response: str
     error: str | None = None
     mode: str  # "direct" | "mq"
+
+
+class ModelsResponse(BaseModel):
+    models: list[str]
+    default: str
 
 
 class HealthResponse(BaseModel):
@@ -180,6 +186,26 @@ def create_app(
             mode="mq" if mq_on else "direct",
         )
 
+    @_app.get("/api/models", response_model=ModelsResponse)
+    async def models() -> ModelsResponse:
+        """Return the list of Ollama models available on this machine."""
+        import ollama
+
+        settings = get_settings()
+        try:
+            client = ollama.AsyncClient(host=settings.ollama_base_url)
+            result = await client.list()
+            names: list[str] = sorted(
+                m["model"] for m in result.get("models", []) if m.get("model")
+            )
+        except Exception as exc:
+            log.error("ui_models_fetch_failed", error=str(exc))
+            raise HTTPException(
+                status_code=503, detail=f"Could not reach Ollama: {exc}"
+            ) from exc
+
+        return ModelsResponse(models=names, default=settings.ollama_model)
+
     @_app.post("/api/chat", response_model=ChatResponse)
     async def chat(body: ChatRequest) -> ChatResponse:
         user_input = body.user_input.strip()
@@ -188,7 +214,7 @@ def create_app(
 
         if _app.state.mq_enabled and _app.state.producer is not None:
             return await _chat_mq(_app, user_input)
-        return await _chat_direct(_app, user_input)
+        return await _chat_direct(_app, user_input, model=body.model)
 
     @_app.get("/api/history", response_model=HistoryResponse)
     async def history(limit: int = Query(default=20, ge=1, le=200)) -> HistoryResponse:
@@ -217,12 +243,14 @@ def create_app(
 # ---------------------------------------------------------------------------
 
 
-async def _chat_direct(app: FastAPI, user_input: str) -> ChatResponse:
+async def _chat_direct(app: FastAPI, user_input: str, model: str | None = None) -> ChatResponse:
     request_id = str(uuid.uuid4())
     initial_state: dict[str, Any] = {
         "user_input": user_input,
         "metadata": {"request_id": request_id},
     }
+    if model:
+        initial_state["model"] = model
     try:
         final_state: dict[str, Any] = await app.state.graph.ainvoke(initial_state)
     except Exception as exc:

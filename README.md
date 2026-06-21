@@ -21,6 +21,8 @@ Agent: "I found 1 match: example.json"
 
 All answers are backed by real tool output — the LLM synthesises language but cannot hallucinate file contents.
 
+The web UI includes a **model selection dropdown** populated dynamically from your local Ollama installation (`GET /api/models`). The selected model is sent with each request and used for both the tool-selection pass and the response-synthesis pass. The selection is remembered in `localStorage` across page refreshes. The `OLLAMA_MODEL` environment variable sets the startup default used when no model is explicitly chosen.
+
 ---
 
 ## Architecture
@@ -139,7 +141,7 @@ All settings live in `.env` (copy from `.env.example`).
 | Variable | Default | Description |
 |---|---|---|
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama API base URL |
-| `OLLAMA_MODEL` | `llama3.2` | Model name as returned by `ollama list` |
+| `OLLAMA_MODEL` | `llama3.2` | Default model used when the UI sends no model override |
 | `MCP_SERVER_HOST` | `0.0.0.0` | FastMCP server bind address |
 | `MCP_SERVER_PORT` | `8000` | FastMCP server port |
 | `SQLITE_DB_PATH` | `data/workflow.db` | SQLite database file path |
@@ -187,16 +189,33 @@ Test counts by module:
 | Method | Path | Description |
 |---|---|---|
 | `GET` | `/` | Web UI (HTML) |
+| `GET` | `/api/models` | List of Ollama models available on this machine |
 | `POST` | `/api/chat` | Submit a request; returns `ChatResponse` |
 | `GET` | `/api/health` | Liveness check — returns mode and MQ status |
 | `GET` | `/api/history?limit=N` | Recent workflow runs from SQLite |
+
+### `GET /api/models`
+
+```json
+{
+  "models": ["llama3.2:latest", "mistral:7b", "phi3:mini"],
+  "default": "llama3.2"
+}
+```
+
+Returns every model currently available in the local Ollama installation, sorted alphabetically, plus the server-configured default (`OLLAMA_MODEL`). Returns `503` if Ollama is unreachable.
 
 ### `POST /api/chat`
 
 **Request:**
 ```json
-{ "user_input": "list the files" }
+{
+  "user_input": "list the files",
+  "model": "mistral:7b"
+}
 ```
+
+`model` is optional. When omitted the server uses the `OLLAMA_MODEL` default.
 
 **Response:**
 ```json

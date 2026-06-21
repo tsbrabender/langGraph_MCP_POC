@@ -69,10 +69,10 @@ Final Response
 
 ### Recommended Architecture: Hybrid Routing
 
-While the two-pass LLM pattern is flexible, a **hybrid approach** is recommended for production use:
+While the two-pass LLM pattern is flexible, a **hybrid approach** is the default in this project:
 
-- **LLM for intent classification** — the LLM classifies user intent into a known category.
-- **Rule-based routing for tool selection** — LangGraph edges and state flags deterministically route to the correct tool based on classified intent.
+- **Keyword regex for intent classification** — the `classify_intent` node runs fast regular-expression patterns against the user input to extract a tool name and arguments without an LLM call.
+- **Rule-based routing for tool selection** — LangGraph edges deterministically route to `mcp_tool_invocation` on a full keyword match, skipping the LLM entirely. On a partial match the extracted tool name is passed as a hint to the LLM.
 - **LLM only for final response synthesis** — reduces total LLM calls, eliminates tool hallucination, and improves latency.
 
 This hybrid model preserves the natural-language flexibility of LLM-driven workflows while avoiding the reliability issues of fully LLM-driven tool selection.
@@ -123,8 +123,8 @@ This hybrid model preserves the natural-language flexibility of LLM-driven workf
 
 - **LLM-driven tool selection** — the local Ollama LLM decides which MCP tool to call based on user intent and tool schemas.
 - **Two-pass LLM workflow** — Pass 1 selects the tool; Pass 2 synthesizes the natural-language response from tool output.
+- **Per-request model selection** — the UI sends an optional `model` field with each request. It flows through `GraphState["model"]` and is passed as an override to every `OllamaClient.chat()` call in that request, overriding the `OLLAMA_MODEL` default without restarting the server.
 - **Separation of concerns** — LLM logic lives in `/app/llm/`, MCP tools in `/app/mcp_server/`, graph orchestration in `/app/graph/`. No cross-layer imports.
-- **MCP server is isolated** — runs as its own process; no direct Python imports from graph or LLM layers.
 - **LangGraph nodes are pure** — nodes orchestrate state transitions only; business logic and LLM calls are delegated to injected service clients.
 - **SQLite for durable state** — workflow checkpoints, audit logs, and tool output history.
 - **MQ for async work** — optional; used when background tasks or fan-out patterns are needed.
@@ -171,9 +171,10 @@ This hybrid model preserves the natural-language flexibility of LLM-driven workf
 
 ### LangGraph Nodes (`app/graph/nodes/`)
 
-- Each node is a **standalone function**: `def my_node(state: GraphState) -> dict`.
+- Each node is produced by a **`make_node(dep)` factory** that closes over an injected dependency and returns the async callable `async def node(state: GraphState) -> dict`.
 - Nodes must not import from `app/mcp_server/` or `app/llm/` directly — use injected client handles.
 - Nodes return **partial state updates only** — never mutate the incoming state object.
+- Read `state.get("model")` when passing an LLM call — this carries the per-request model override from the UI.
 - Log at node entry and exit.
 
 ### Services
@@ -187,9 +188,10 @@ This hybrid model preserves the natural-language flexibility of LLM-driven workf
 ## Operational Assumptions
 
 - The system runs **fully locally by default** — no cloud account or remote service is required.
-- **Ollama must be running** as a local service before the LangGraph workflow starts. The target model must be pulled and available.
+- **Ollama must be running** as a local service before the LangGraph workflow starts. Pull at least one model with `ollama pull <name>` before starting.
+- **`OLLAMA_MODEL`** sets the server-wide default model used when a request carries no `model` field. The web UI dropdown lets users override this per-request without restarting the server; the list of available models is fetched live from Ollama via `GET /api/models`.
 - **FastMCP server** runs as a separate long-lived process, independent of the LangGraph executor.
-- **LangGraph workflows call MCP tools** through the MCP client protocol — not by direct Python import.
+- **MCP tool dispatch** is handled by `MCPExecutor` (`app/services/mcp_executor.py`), which calls tool functions via direct Python import rather than the MCP client protocol. The FastMCP server (`app/mcp_server/server.py`) exists as a separately deployable process if protocol-level isolation is required.
 - **MCP tools may call external internet APIs** when the tool is configured and network access is available.
 - **SQLite** is the default and only required database — no separate DB server needed.
 - **Message queue is optional** — the system functions without it; MQ is added when async fan-out or background workers are needed.
@@ -220,7 +222,8 @@ This hybrid model preserves the natural-language flexibility of LLM-driven workf
 
 1. Add or modify prompt templates in `app/llm/`.
 2. Update `tool_selector.py` for new tool-routing logic or `response_synthesizer.py` for new output patterns.
-3. Write unit tests that assert correct behavior given mock LLM responses — do not depend on live Ollama calls in unit tests.
+3. Accept a `model: str | None = None` parameter in any new LLM method and forward it to `OllamaClient.chat(model=model)` so the per-request model selection propagates correctly.
+4. Write unit tests that assert correct behavior given mock LLM responses — do not depend on live Ollama calls in unit tests.
 
 ### Add a New Database Table
 
@@ -271,12 +274,16 @@ The hybrid pattern is the default approach in this project. The fully LLM-driven
 |---|---|
 | MCP tools | `app/mcp_server/tools/` |
 | MCP server entry | `app/mcp_server/server.py` |
+| MCP tool dispatcher | `app/services/mcp_executor.py` |
 | Ollama client | `app/llm/ollama_client.py` |
 | Tool selection logic | `app/llm/tool_selector.py` |
 | Response synthesis | `app/llm/response_synthesizer.py` |
+| Tool registry (LLM ↔ MCP bridge) | `app/llm/tool_registry.py` |
 | Graph nodes | `app/graph/nodes/` |
 | Graph state schema | `app/graph/state.py` |
 | Graph wiring | `app/graph/graph.py` |
+| API + model selection endpoint | `app/ui/api.py` |
+| Web UI + model dropdown | `app/ui/static/index.html` |
 | Database helpers | `app/services/db/sqlite_client.py` |
 | MQ publish | `app/services/mq/producer.py` |
 | MQ consume | `app/services/mq/consumer.py` |

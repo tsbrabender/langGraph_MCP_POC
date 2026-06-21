@@ -94,6 +94,7 @@ class ResponseSynthesizer:
         tool_name: str,
         tool_output: Any,
         state_context: dict[str, Any] | None = None,
+        model: str | None = None,
     ) -> str:
         """Produce a natural-language response grounded in tool output.
 
@@ -102,6 +103,7 @@ class ResponseSynthesizer:
             tool_name: Name of the MCP tool that was called.
             tool_output: Structured output returned by the MCP tool.
             state_context: Optional additional fields from graph state.
+            model: Optional Ollama model name override; falls back to client default.
 
         Returns:
             A natural-language string suitable for presenting to the user.
@@ -110,9 +112,9 @@ class ResponseSynthesizer:
             ResponseSynthesisError: If the LLM returns an empty or whitespace-only response.
         """
         messages = self.build_messages(user_input, tool_name, tool_output, state_context)
-        log.info("response_synthesizer_start", user_input=user_input[:120], tool_name=tool_name)
+        log.info("response_synthesizer_start", user_input=user_input[:120], tool_name=tool_name, model=model)
 
-        raw = await self._llm.chat(messages)
+        raw = await self._llm.chat(messages, model=model)
         response = raw.strip()
 
         if not response:
