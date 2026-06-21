@@ -38,41 +38,62 @@ This file defines the project's tech stack, architecture, coding standards, and 
 
 ## Architecture
 
-### High-Level Workflow (Two-Pass LLM Pattern)
+### High-Level Workflow (Default: Context-Aware Hybrid Graph)
 
-The core execution pattern uses the local Ollama LLM in two distinct passes per request:
+The default graph (`build_context_aware_graph`) runs 8 nodes. The Ollama LLM is invoked in two passes only; all other nodes are deterministic.
 
 ```
 User Input
     │
     ▼
-[LangGraph Node: Tool Selection]
-    │  Ollama LLM receives user input + available tool schemas
-    │  → selects tool + generates arguments
+[ingest_user_input]     Validate and stamp request metadata
+    │
     ▼
-[LangGraph Node: MCP Tool Invocation]
-    │  MCP client calls selected tool
-    │  → returns structured output
-    ▼
-[LangGraph Node: Response Synthesis]
-    │  Ollama LLM receives: user input + tool output + graph state
-    │  → generates natural-language response
-    ▼
-Final Response
+[detect_topic]          Keyword scan against topic_map.yaml
+    │  ┌── topic found ──────────────────────────────────────────┐
+    │  │                                                          │
+    ▼  ▼                                                          │
+[retrieve_context]      Cache-first fetch of topic resource URLs  │
+    │                   → populates state["context_documents"]    │
+    └──────────────────────────────────────────────────────────── ┘
+                        │
+                        ▼
+            [classify_intent]   Keyword regex → try to extract tool + args
+                │  ┌── full match ─────────────────────────────────────┐
+                │  │                                                    │
+                ▼  ▼                                                    │
+        [llm_tool_selection]    Ollama Pass 1: choose tool + args       │
+            │                                                           │
+            └───────────────────────────────────────────────────────────┘
+                        │
+                        ▼
+            [mcp_tool_invocation]    Execute the selected MCP tool
+                        │
+                        ▼
+            [llm_response_synthesis] Ollama Pass 2: synthesise response
+                                     (context_documents injected into prompt when present)
+                        │
+                        ▼
+            [finalize_response]      Stamp timestamps, persist to SQLite
+                        │
+                        ▼
+                  Final Response
 ```
 
-**Pass 1 — Tool Selection:** The LLM analyzes user input against available MCP tool schemas and returns a structured tool call (name + arguments). Output is validated against the tool's Pydantic schema before execution.
+**Pass 1 — Tool Selection:** The LLM receives user input and all 9 registered MCP tool schemas. Returns a structured JSON tool call validated against the tool's Pydantic schema before execution.
 
-**Pass 2 — Response Synthesis:** The LLM receives the original user input plus the MCP tool's structured output as enriched context and produces the final natural-language response.
+**Pass 2 — Response Synthesis:** The LLM receives the original user input, MCP tool output, and — when a topic was detected — the `context_documents` from `retrieve_context` as grounding material.
+
+Two simpler variants exist: `build_llm_graph()` (fully LLM-driven, 5 nodes) and `build_hybrid_graph()` (adds `classify_intent`, 6 nodes). Both share the same LangGraph node implementations.
 
 ---
 
 ### Recommended Architecture: Hybrid Routing
 
-While the two-pass LLM pattern is flexible, a **hybrid approach** is recommended for production use:
+While the two-pass LLM pattern is flexible, a **hybrid approach** is the default in this project:
 
-- **LLM for intent classification** — the LLM classifies user intent into a known category.
-- **Rule-based routing for tool selection** — LangGraph edges and state flags deterministically route to the correct tool based on classified intent.
+- **Keyword regex for intent classification** — the `classify_intent` node runs fast regular-expression patterns against the user input to extract a tool name and arguments without an LLM call.
+- **Rule-based routing for tool selection** — LangGraph edges deterministically route to `mcp_tool_invocation` on a full keyword match, skipping the LLM entirely. On a partial match the extracted tool name is passed as a hint to the LLM.
 - **LLM only for final response synthesis** — reduces total LLM calls, eliminates tool hallucination, and improves latency.
 
 This hybrid model preserves the natural-language flexibility of LLM-driven workflows while avoiding the reliability issues of fully LLM-driven tool selection.
@@ -85,33 +106,51 @@ This hybrid model preserves the natural-language flexibility of LLM-driven workf
 /project-root
     /app
         /mcp_server
-            /tools              # Individual MCP tool definitions
-            /resources          # MCP resource handlers
-            /prompts            # MCP prompt templates
+            /tools              # Individual MCP tool definitions (9 tools)
+            /resources
+                topic_map.yaml  # Topic → keyword list + resource URLs + TTL
+            /prompts            # MCP prompt templates (placeholder)
             server.py           # FastMCP server entry point
         /graph
-            /nodes              # LangGraph node functions (pure, testable)
-            /edges              # Conditional edge logic
-            state.py            # Shared graph state schema (Pydantic)
-            graph.py            # Graph assembly and compilation
+            /nodes              # LangGraph node functions (8 nodes, make_node factory)
+            /edges
+                routing.py      # Conditional edge logic (5 routing functions)
+            state.py            # GraphState TypedDict (total=False)
+            graph.py            # build_llm_graph(), build_hybrid_graph(),
+                                #   build_context_aware_graph()
         /llm
-            ollama_client.py        # Wrapper for local Ollama LLM calls
-            tool_selector.py        # LLM-driven tool selection logic
-            response_synthesizer.py # LLM natural-language output generator
+            ollama_client.py        # Async Ollama wrapper (per-call model override)
+            tool_selector.py        # Pass 1 — LLM tool selection with schema validation
+            response_synthesizer.py # Pass 2 — grounded synthesis with optional context_documents
+            tool_registry.py        # Connects LLM layer to all 9 MCP tool schemas
         /services
+            mcp_executor.py         # Dispatches tool calls (injects llm_client, cache_client)
+            /cache
+                cache_client.py     # CacheClient interface + ResourceCacheEntry data class
+                sqlite_cache.py     # SQLite-backed get / set / delete
             /db
-                sqlite_client.py    # SQLite connection and query helpers
-                /migrations         # Schema migration scripts
+                sqlite_client.py    # Async SQLite connection and query helpers
+                models.py           # WorkflowRun Pydantic model
+                /migrations
+                    001_initial.sql         # workflow_runs table
+                    002_resource_cache.sql  # resource_cache table
             /mq
                 producer.py         # Message queue publish interface
                 consumer.py         # Message queue subscribe/consume logic
+                runner.py           # python -m app.services.mq.runner entry point
+                schemas.py          # RequestMessage / ResponseMessage
+        /ui
+            api.py              # FastAPI app (create_app factory)
+            /static
+                index.html      # Single-page web UI with model selection dropdown
         /utils
-            logging.py          # Structured logging setup
-            config.py           # Environment and settings loader
-            errors.py           # Shared exception types
+            config.py           # pydantic-settings — reads from .env
+            topic_config.py     # TopicMap loader and validator for topic_map.yaml
+            logging.py          # structlog JSON logging setup
+            errors.py           # Typed exception hierarchy
     /tests
-        /unit                   # Tests for nodes, tools, LLM logic, services
-        /integration            # End-to-end graph and MCP integration tests
+        /unit                   # Pure tests — no Ollama, Redis, or file system
+        /integration            # End-to-end graph tests with real file I/O
     CLAUDE.md
     pyproject.toml
     README.md
@@ -123,8 +162,8 @@ This hybrid model preserves the natural-language flexibility of LLM-driven workf
 
 - **LLM-driven tool selection** — the local Ollama LLM decides which MCP tool to call based on user intent and tool schemas.
 - **Two-pass LLM workflow** — Pass 1 selects the tool; Pass 2 synthesizes the natural-language response from tool output.
+- **Per-request model selection** — the UI sends an optional `model` field with each request. It flows through `GraphState["model"]` and is passed as an override to every `OllamaClient.chat()` call in that request, overriding the `OLLAMA_MODEL` default without restarting the server.
 - **Separation of concerns** — LLM logic lives in `/app/llm/`, MCP tools in `/app/mcp_server/`, graph orchestration in `/app/graph/`. No cross-layer imports.
-- **MCP server is isolated** — runs as its own process; no direct Python imports from graph or LLM layers.
 - **LangGraph nodes are pure** — nodes orchestrate state transitions only; business logic and LLM calls are delegated to injected service clients.
 - **SQLite for durable state** — workflow checkpoints, audit logs, and tool output history.
 - **MQ for async work** — optional; used when background tasks or fan-out patterns are needed.
@@ -171,9 +210,10 @@ This hybrid model preserves the natural-language flexibility of LLM-driven workf
 
 ### LangGraph Nodes (`app/graph/nodes/`)
 
-- Each node is a **standalone function**: `def my_node(state: GraphState) -> dict`.
+- Each node is produced by a **`make_node(dep)` factory** that closes over an injected dependency and returns the async callable `async def node(state: GraphState) -> dict`.
 - Nodes must not import from `app/mcp_server/` or `app/llm/` directly — use injected client handles.
 - Nodes return **partial state updates only** — never mutate the incoming state object.
+- Read `state.get("model")` when passing an LLM call — this carries the per-request model override from the UI.
 - Log at node entry and exit.
 
 ### Services
@@ -187,9 +227,10 @@ This hybrid model preserves the natural-language flexibility of LLM-driven workf
 ## Operational Assumptions
 
 - The system runs **fully locally by default** — no cloud account or remote service is required.
-- **Ollama must be running** as a local service before the LangGraph workflow starts. The target model must be pulled and available.
+- **Ollama must be running** as a local service before the LangGraph workflow starts. Pull at least one model with `ollama pull <name>` before starting.
+- **`OLLAMA_MODEL`** sets the server-wide default model used when a request carries no `model` field. The web UI dropdown lets users override this per-request without restarting the server; the list of available models is fetched live from Ollama via `GET /api/models`.
 - **FastMCP server** runs as a separate long-lived process, independent of the LangGraph executor.
-- **LangGraph workflows call MCP tools** through the MCP client protocol — not by direct Python import.
+- **MCP tool dispatch** is handled by `MCPExecutor` (`app/services/mcp_executor.py`), which calls tool functions via direct Python import rather than the MCP client protocol. The FastMCP server (`app/mcp_server/server.py`) exists as a separately deployable process if protocol-level isolation is required.
 - **MCP tools may call external internet APIs** when the tool is configured and network access is available.
 - **SQLite** is the default and only required database — no separate DB server needed.
 - **Message queue is optional** — the system functions without it; MQ is added when async fan-out or background workers are needed.
@@ -220,7 +261,8 @@ This hybrid model preserves the natural-language flexibility of LLM-driven workf
 
 1. Add or modify prompt templates in `app/llm/`.
 2. Update `tool_selector.py` for new tool-routing logic or `response_synthesizer.py` for new output patterns.
-3. Write unit tests that assert correct behavior given mock LLM responses — do not depend on live Ollama calls in unit tests.
+3. Accept a `model: str | None = None` parameter in any new LLM method and forward it to `OllamaClient.chat(model=model)` so the per-request model selection propagates correctly.
+4. Write unit tests that assert correct behavior given mock LLM responses — do not depend on live Ollama calls in unit tests.
 
 ### Add a New Database Table
 
@@ -235,6 +277,16 @@ This hybrid model preserves the natural-language flexibility of LLM-driven workf
 2. Register the handler for the relevant queue or topic.
 3. Ensure idempotency — the handler must be safe to call more than once for the same message.
 4. Write an integration test using a local MQ instance or mock.
+
+### Add a New Topic to Context Retrieval
+
+1. Open `app/mcp_server/resources/topic_map.yaml`.
+2. Add an entry under `topics:` with:
+   - `keywords` — list of lowercase phrases matched against user input (case-insensitive)
+   - `urls` — ordered list of resource URLs to fetch for this topic
+   - `ttl_seconds` — cache lifetime (e.g. `21600` for 6 h, `3600` for 1 h)
+3. Restart the server — `topic_config.py` uses `@lru_cache` so the new config is picked up on next cold start. For a live reload, restart the FastAPI process.
+4. Verify detection by sending a prompt containing one of the new keywords and checking the logs for `node_detect_topic_match`.
 
 ### Add a New External Integration
 
@@ -269,14 +321,23 @@ The hybrid pattern is the default approach in this project. The fully LLM-driven
 
 | Concern | Location |
 |---|---|
-| MCP tools | `app/mcp_server/tools/` |
+| MCP tools (file-system) | `app/mcp_server/tools/` (list_files, read_file, search_files, extract_metadata, summarize_file) |
+| MCP tools (context retrieval) | `app/mcp_server/tools/` (get_topic_resources, fetch_web_resource, get_cached_resource, refresh_cache) |
 | MCP server entry | `app/mcp_server/server.py` |
+| MCP tool dispatcher | `app/services/mcp_executor.py` |
+| Topic-to-URL config | `app/mcp_server/resources/topic_map.yaml` |
+| Topic config loader + validator | `app/utils/topic_config.py` |
+| Resource cache interface | `app/services/cache/cache_client.py` |
+| Resource cache (SQLite) | `app/services/cache/sqlite_cache.py` |
 | Ollama client | `app/llm/ollama_client.py` |
 | Tool selection logic | `app/llm/tool_selector.py` |
 | Response synthesis | `app/llm/response_synthesizer.py` |
+| Tool registry (LLM ↔ MCP bridge) | `app/llm/tool_registry.py` |
 | Graph nodes | `app/graph/nodes/` |
 | Graph state schema | `app/graph/state.py` |
 | Graph wiring | `app/graph/graph.py` |
+| API + model selection endpoint | `app/ui/api.py` |
+| Web UI + model dropdown | `app/ui/static/index.html` |
 | Database helpers | `app/services/db/sqlite_client.py` |
 | MQ publish | `app/services/mq/producer.py` |
 | MQ consume | `app/services/mq/consumer.py` |

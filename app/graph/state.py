@@ -26,5 +26,13 @@ class GraphState(TypedDict, total=False):
     # --- Error propagation ---
     error: str                 # Set by any node on failure; triggers error routing
 
+    # --- Topic-aware context retrieval ---
+    topic: str                          # Detected topic from user input (detect_topic node)
+    context_documents: list[dict[str, Any]]  # [{url, content, source}] from retrieve_context node
+    context_retrieved: bool             # True when at least one document was successfully fetched
+
+    # --- LLM model override ---
+    model: str                  # Per-request Ollama model name; falls back to settings default when absent
+
     # --- Metadata ---
     metadata: dict[str, Any]   # request_id, timestamps, etc.

@@ -7,8 +7,12 @@ Graph nodes and LLM classes must not import from this module's dependencies dire
 
 from app.llm.tool_selector import ToolDefinition
 from app.mcp_server.tools.extract_metadata import ExtractMetadataInput
+from app.mcp_server.tools.fetch_web_resource import FetchWebResourceInput
+from app.mcp_server.tools.get_cached_resource import GetCachedResourceInput
+from app.mcp_server.tools.get_topic_resources import GetTopicResourcesInput
 from app.mcp_server.tools.list_files import ListFilesInput
 from app.mcp_server.tools.read_file import ReadFileInput
+from app.mcp_server.tools.refresh_cache import RefreshCacheInput
 from app.mcp_server.tools.search_files import SearchFilesInput
 from app.mcp_server.tools.summarize_file import SummarizeFileInput
 
@@ -16,9 +20,15 @@ from app.mcp_server.tools.summarize_file import SummarizeFileInput
 def build_tool_definitions() -> list[ToolDefinition]:
     """Return the full list of ToolDefinition objects for all registered MCP tools.
 
-    Add a new entry here whenever a new MCP tool is registered in server.py.
+    File-system tools (LLM selects these for direct user requests):
+      list_files, read_file, search_files, summarize_file, extract_metadata
+
+    Context-retrieval tools (primarily orchestrated by the retrieve_context node,
+    but registered here so the LLM can also select them for explicit requests):
+      get_topic_resources, fetch_web_resource, get_cached_resource, refresh_cache
     """
     return [
+        # --- File system tools ---
         ToolDefinition(
             name="list_files",
             description=(
@@ -60,5 +70,38 @@ def build_tool_definitions() -> list[ToolDefinition]:
                 "Use when the user asks about file details, not file content."
             ),
             input_schema_class=ExtractMetadataInput,
+        ),
+        # --- Context retrieval tools ---
+        ToolDefinition(
+            name="get_topic_resources",
+            description=(
+                "Return the list of configured resource URLs for a topic (e.g. 'dyslexia', 'adhd'). "
+                "Use when the user asks about a topic that may have external reference material."
+            ),
+            input_schema_class=GetTopicResourcesInput,
+        ),
+        ToolDefinition(
+            name="fetch_web_resource",
+            description=(
+                "Fetch a web page or document from a URL and return its normalized plain-text content. "
+                "Use when external reference material must be retrieved from the internet."
+            ),
+            input_schema_class=FetchWebResourceInput,
+        ),
+        ToolDefinition(
+            name="get_cached_resource",
+            description=(
+                "Return cached content for a URL if it exists and has not expired. "
+                "Use before fetch_web_resource to avoid redundant network requests."
+            ),
+            input_schema_class=GetCachedResourceInput,
+        ),
+        ToolDefinition(
+            name="refresh_cache",
+            description=(
+                "Force a fresh fetch of a URL and overwrite the cached content. "
+                "Use when the user explicitly requests up-to-date or fresh information."
+            ),
+            input_schema_class=RefreshCacheInput,
         ),
     ]

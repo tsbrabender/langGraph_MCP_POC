@@ -38,14 +38,23 @@ def make_node(synthesizer: ResponseSynthesizer):
         user_input = state.get("user_input", "")
         tool_name = state.get("selected_tool", "unknown")
         tool_output = state.get("tool_output")
+        model = state.get("model")
+        context_documents = state.get("context_documents") or []
 
-        log.info("node_response_synthesis_start", tool_name=tool_name)
+        log.info(
+            "node_response_synthesis_start",
+            tool_name=tool_name,
+            model=model,
+            context_doc_count=len(context_documents),
+        )
 
         try:
             response = await synthesizer.synthesize(
                 user_input=user_input,
                 tool_name=tool_name,
                 tool_output=tool_output,
+                model=model,
+                context_documents=context_documents if context_documents else None,
             )
         except ResponseSynthesisError as exc:
             log.error("node_response_synthesis_failed", error=str(exc))

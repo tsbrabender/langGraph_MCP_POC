@@ -153,12 +153,13 @@ class ToolSelector:
             {"role": "user", "content": user_content},
         ]
 
-    async def select(self, user_input: str, context: dict[str, Any] | None = None) -> ToolCall:
+    async def select(self, user_input: str, context: dict[str, Any] | None = None, model: str | None = None) -> ToolCall:
         """Ask the LLM to select a tool and return a validated ToolCall.
 
         Args:
             user_input: Raw user request string.
             context: Optional additional context from graph state.
+            model: Optional Ollama model name override; falls back to client default.
 
         Returns:
             A ToolCall with a validated tool name and arguments.
@@ -168,9 +169,9 @@ class ToolSelector:
                 tool, or provides arguments that fail Pydantic validation.
         """
         messages = self.build_messages(user_input, context)
-        log.info("tool_selector_start", user_input=user_input[:120])
+        log.info("tool_selector_start", user_input=user_input[:120], model=model)
 
-        raw = await self._llm.chat(messages, format=_RESPONSE_SCHEMA)
+        raw = await self._llm.chat(messages, model=model, format=_RESPONSE_SCHEMA)
 
         # --- Parse JSON ---
         try:

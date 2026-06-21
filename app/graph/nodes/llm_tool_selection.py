@@ -27,14 +27,15 @@ def make_node(selector: ToolSelector):
     async def node(state: GraphState) -> dict[str, Any]:
         user_input = state.get("user_input", "")
         intent = state.get("intent")
-        log.info("node_tool_selection_start", user_input=user_input[:80], intent=intent)
+        model = state.get("model")
+        log.info("node_tool_selection_start", user_input=user_input[:80], intent=intent, model=model)
 
         context: dict[str, Any] | None = None
         if intent:
             context = {"intent": intent, "hint": f"Prefer the '{intent}' tool."}
 
         try:
-            tool_call = await selector.select(user_input, context=context)
+            tool_call = await selector.select(user_input, context=context, model=model)
         except ToolSelectionError as exc:
             log.error("node_tool_selection_failed", error=str(exc))
             return {"error": str(exc)}

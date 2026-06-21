@@ -1,0 +1,50 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyd
+*.pyo
+
+# Distribution / packaging (Hatchling)
+dist/
+build/
+*.egg-info/
+.eggs/
+*.egg
+.hatch/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Environment — keep .env.example, ignore the real .env
+.env
+
+# Runtime data
+data/           # SQLite database (data/workflow.db)
+sandbox/        # MCP tool working directory
+
+# Testing
+.pytest_cache/
+.coverage
+coverage.xml
+coverage.json
+htmlcov/
+
+# Type checking / linting caches
+.mypy_cache/
+.ruff_cache/
+
+# IDE
+.vscode/
+.idea/
+*.iml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
