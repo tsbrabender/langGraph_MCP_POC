@@ -22,7 +22,9 @@ Dependencies (injected via make_node):
 from typing import Any
 
 from app.graph.state import GraphState
-from app.mcp_server.tools import fetch_web_resource, get_cached_resource, get_topic_resources
+from app.mcp_server.tools.context_retrieval.fetch_web_resource.tool import run as fetch_web_resource_run
+from app.mcp_server.tools.context_retrieval.get_cached_resource.tool import run as get_cached_resource_run
+from app.mcp_server.tools.context_retrieval.get_topic_resources.tool import run as get_topic_resources_run
 from app.utils.errors import MCPToolError
 from app.utils.logging import get_logger
 
@@ -45,7 +47,7 @@ def make_node(cache_client: Any):
         log.info("node_retrieve_context_start", topic=topic)
 
         # Step 1: resolve URLs for this topic
-        resources = await get_topic_resources.run(topic)
+        resources = await get_topic_resources_run(topic)
         if not resources.found:
             log.info("node_retrieve_context_no_resources", topic=topic)
             return {"context_documents": [], "context_retrieved": False}
@@ -55,7 +57,7 @@ def make_node(cache_client: Any):
         for url in resources.urls:
             try:
                 # Step 2a: try cache first
-                cached = await get_cached_resource.run(url, cache_client=cache_client)
+                cached = await get_cached_resource_run(url, cache_client=cache_client)
 
                 if cached.hit:
                     log.info("node_retrieve_context_cache_hit", url=url, age_seconds=cached.age_seconds)
@@ -68,7 +70,7 @@ def make_node(cache_client: Any):
                     url=url,
                     reason="miss" if cached.age_seconds is None else "expired",
                 )
-                fetched = await fetch_web_resource.run(url)
+                fetched = await fetch_web_resource_run(url)
 
                 # Step 2c: write back to cache
                 await cache_client.set(url, fetched.content, ttl_seconds=resources.ttl_seconds)

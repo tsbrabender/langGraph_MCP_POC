@@ -5,14 +5,14 @@ All tests mock the OllamaClient — no live Ollama instance required.
 
 import json
 import pytest
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 from app.llm.tool_selector import ToolCall, ToolDefinition, ToolSelector
 from app.llm.response_synthesizer import ResponseSynthesizer
-from app.llm.tool_registry import build_tool_definitions
-from app.mcp_server.tools.list_files import ListFilesInput
-from app.mcp_server.tools.read_file import ReadFileInput
-from app.mcp_server.tools.search_files import SearchFilesInput
+from app.llm.tool_registry import ToolRegistry
+from app.mcp_server.tools.file_ops.list_files.schemas import ListFilesInput
+from app.mcp_server.tools.file_ops.read_file.schemas import ReadFileInput
+from app.mcp_server.tools.file_ops.search_files.schemas import SearchFilesInput
 from app.utils.errors import ToolSelectionError, ResponseSynthesisError
 
 
@@ -51,7 +51,9 @@ def tool_defs() -> list[ToolDefinition]:
 
 @pytest.fixture
 def selector(mock_llm: AsyncMock, tool_defs: list[ToolDefinition]) -> ToolSelector:
-    return ToolSelector(mock_llm, tool_defs)
+    registry = MagicMock()
+    registry.definitions = tool_defs
+    return ToolSelector(mock_llm, registry)
 
 
 @pytest.fixture
@@ -268,24 +270,35 @@ class TestToolSelectorErrors:
 
 
 class TestToolRegistry:
-    def test_returns_all_five_tools(self) -> None:
-        defs = build_tool_definitions()
-        names = {d.name for d in defs}
-        assert names == {"list_files", "read_file", "search_files", "summarize_file", "extract_metadata"}
+    def test_returns_all_ten_tools(self) -> None:
+        r = ToolRegistry()
+        r.reload()
+        names = {d.name for d in r.definitions}
+        expected = {
+            "list_files", "read_file", "search_files", "extract_metadata",
+            "summarize_file", "summarize_text",
+            "get_topic_resources", "fetch_web_resource", "get_cached_resource", "refresh_cache",
+        }
+        assert expected <= names
 
     def test_each_definition_has_description(self) -> None:
-        for d in build_tool_definitions():
+        r = ToolRegistry()
+        r.reload()
+        for d in r.definitions:
             assert d.description, f"{d.name} has an empty description"
 
     def test_each_schema_is_valid_dict(self) -> None:
-        for d in build_tool_definitions():
+        r = ToolRegistry()
+        r.reload()
+        for d in r.definitions:
             schema = d.json_schema()
             assert isinstance(schema, dict)
             assert "properties" in schema or "type" in schema
 
     def test_tool_definitions_are_unique(self) -> None:
-        defs = build_tool_definitions()
-        names = [d.name for d in defs]
+        r = ToolRegistry()
+        r.reload()
+        names = [d.name for d in r.definitions]
         assert len(names) == len(set(names)), "Duplicate tool names in registry"
 
 

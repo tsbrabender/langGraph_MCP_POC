@@ -12,8 +12,10 @@ Two modes, controlled by MQ_ENABLED in settings:
 The UI never imports MCP tools or the Ollama client directly.
 
 Additional endpoints:
-  GET /api/health    — liveness check with mode information
-  GET /api/history   — recent workflow runs from SQLite (empty list when DB disabled)
+  GET  /api/health        — liveness check with mode information
+  GET  /api/models        — list available Ollama models
+  GET  /api/history       — recent workflow runs from SQLite (empty list when DB disabled)
+  POST /api/tools/refresh — reload tool categories from disk; returns updated registry
 
 To start the server:
     uvicorn app.ui.api:app --reload
@@ -76,6 +78,11 @@ class HistoryResponse(BaseModel):
     total: int
 
 
+class ToolRefreshResponse(BaseModel):
+    categories: dict[str, list[str]]
+    total_tools: int
+
+
 # ---------------------------------------------------------------------------
 # App factory
 # ---------------------------------------------------------------------------
@@ -107,7 +114,6 @@ def create_app(
 
         # --- SQLite ---
         if app.state.db_client is None and app.state.graph is None:
-            # Real startup: build the db client before the graph so we can thread it in.
             from app.services.db.sqlite_client import SQLiteClient
 
             _db = SQLiteClient()
@@ -122,22 +128,28 @@ def create_app(
             app.state.cache_client = SQLiteCacheClient(app.state.db_client)
             log.info("ui_cache_client_ready")
 
-        # --- Graph ---
+        # --- Tool registry + graph ---
         if app.state.graph is None:
             from app.graph.graph import build_context_aware_graph
             from app.llm.ollama_client import OllamaClient
             from app.llm.response_synthesizer import ResponseSynthesizer
-            from app.llm.tool_registry import build_tool_definitions
+            from app.llm.tool_registry import ToolRegistry
             from app.llm.tool_selector import ToolSelector
             from app.services.mcp_executor import MCPExecutor
 
             llm = OllamaClient()
-            selector = ToolSelector(llm, build_tool_definitions())
+
+            registry = ToolRegistry()
+            registry.reload()
+            app.state.tool_registry = registry
+
+            selector = ToolSelector(llm, registry)
             cache_client = getattr(app.state, "cache_client", None)
             executor = MCPExecutor(
                 sandbox_root=Path(settings.sandbox_root).resolve(),
                 llm_client=llm,
                 cache_client=cache_client,
+                tool_registry=registry,
             )
             synthesizer = ResponseSynthesizer(llm)
             app.state.graph = build_context_aware_graph(
@@ -180,6 +192,7 @@ def create_app(
     _app.state.producer = producer
     _app.state.db_client = db_client
     _app.state.mq_enabled = False
+    _app.state.tool_registry = None
 
     # ------------------------------------------------------------------ #
     # Routes                                                               #
@@ -188,7 +201,10 @@ def create_app(
     @_app.get("/", response_class=HTMLResponse, include_in_schema=False)
     async def index() -> HTMLResponse:
         html = (_STATIC_DIR / "index.html").read_text(encoding="utf-8")
-        return HTMLResponse(content=html)
+        return HTMLResponse(
+            content=html,
+            headers={"Cache-Control": "no-store"},
+        )
 
     @_app.get("/api/health", response_model=HealthResponse)
     async def health() -> HealthResponse:
@@ -247,6 +263,33 @@ def create_app(
         except Exception as exc:
             log.error("ui_history_error", error=str(exc))
             raise HTTPException(status_code=500, detail=f"History query failed: {exc}") from exc
+
+    @_app.post("/api/tools/refresh", response_model=ToolRefreshResponse)
+    async def refresh_tools() -> ToolRefreshResponse:
+        """Reload all tool categories from disk without restarting the server.
+
+        ToolSelector and MCPExecutor both hold a reference to the ToolRegistry;
+        they see the refreshed tool set on their very next operation after this returns.
+
+        Returns:
+            ToolRefreshResponse with the updated category → tool name mapping and
+            total tool count.
+        """
+        registry = _app.state.tool_registry
+        if registry is None:
+            raise HTTPException(
+                status_code=503,
+                detail="Tool registry is not initialized. Server may still be starting up.",
+            )
+
+        categories = registry.reload()
+        total = sum(len(v) for v in categories.values())
+        log.info(
+            "tools_refreshed",
+            categories=list(categories.keys()),
+            total=total,
+        )
+        return ToolRefreshResponse(categories=categories, total_tools=total)
 
     return _app
 

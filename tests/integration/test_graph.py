@@ -17,6 +17,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock
 
 from app.graph.graph import build_llm_graph, build_hybrid_graph
+from app.llm.tool_registry import ToolRegistry
 from app.llm.tool_selector import ToolCall
 from app.services.mcp_executor import MCPExecutor
 
@@ -39,8 +40,10 @@ def sandbox(tmp_path: Path) -> Path:
 
 @pytest.fixture
 def executor(sandbox: Path) -> MCPExecutor:
-    """Real MCPExecutor backed by the temporary sandbox."""
-    return MCPExecutor(sandbox_root=sandbox)
+    """Real MCPExecutor backed by the temporary sandbox with a loaded ToolRegistry."""
+    registry = ToolRegistry()
+    registry.reload()
+    return MCPExecutor(sandbox_root=sandbox, tool_registry=registry)
 
 
 @pytest.fixture

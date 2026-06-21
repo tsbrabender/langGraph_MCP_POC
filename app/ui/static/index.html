@@ -70,6 +70,23 @@
   button:active { background: #2b6cb0; }
   button:disabled { background: #2d3748; color: #718096; cursor: default; }
 
+  .secondary-btn {
+    background: #2d3748;
+    border: 1px solid #4a5568;
+    color: #a0aec0;
+    font-size: 0.85rem;
+    font-weight: 600;
+    padding: 0.45rem 1rem;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+    white-space: nowrap;
+    align-self: center;
+  }
+  .secondary-btn:hover  { background: #3d4760; color: #e2e8f0; }
+  .secondary-btn:active { background: #2d3748; }
+  .secondary-btn:disabled { background: #1a202c; color: #4a5568; cursor: default; border-color: #2d3748; }
+
   #status {
     display: none;
     align-items: center;
@@ -164,6 +181,81 @@
   }
   select#model-select:focus { outline: none; border-color: #4a9eff; }
   select#model-select:disabled { color: #4a5568; cursor: default; }
+
+  /* ---- Tool Refresh ---- */
+  .toolbar-row {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+  }
+  #refresh-status {
+    font-size: 0.8rem;
+    color: #68d391;
+    flex: 1;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  #refresh-status.error { color: #fc8181; }
+
+  .tool-panel {
+    background: #1a202c;
+    border: 1px solid #2d3748;
+    border-radius: 10px;
+    overflow: hidden;
+    display: none;
+  }
+  .tool-panel-header {
+    background: #171c27;
+    border-bottom: 1px solid #2d3748;
+    color: #a0aec0;
+    font-size: 0.75rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    padding: 0.5rem 1rem;
+    text-transform: uppercase;
+  }
+  .tool-category {
+    padding: 0.5rem 1rem 0.35rem;
+    border-bottom: 1px solid #1e2535;
+  }
+  .tool-category:last-child { border-bottom: none; }
+  .tool-category-name {
+    color: #90cdf4;
+    font-size: 0.78rem;
+    font-weight: 700;
+    margin-bottom: 0.25rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+  }
+  .tool-item {
+    color: #a8d8a8;
+    font-family: "Cascadia Code", "Fira Code", "Consolas", monospace;
+    font-size: 0.78rem;
+    padding: 0.1rem 0.5rem;
+    line-height: 1.7;
+  }
+  .tool-item::before { content: "· "; color: #4a5568; }
+
+  /* ---- Toast ---- */
+  .toast {
+    position: fixed;
+    bottom: 1.5rem;
+    right: 1.5rem;
+    background: #171c27;
+    border: 1px solid #2d3748;
+    border-radius: 8px;
+    color: #e2e8f0;
+    font-size: 0.85rem;
+    padding: 0.6rem 1rem;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+    opacity: 0;
+    transition: opacity 0.2s;
+    pointer-events: none;
+    z-index: 100;
+  }
+  .toast.show { opacity: 1; }
+  .toast.error { border-color: #742a2a; color: #fc8181; }
 </style>
 </head>
 <body>
@@ -180,6 +272,16 @@
     <select id="model-select" disabled>
       <option value="">Loading models&hellip;</option>
     </select>
+  </div>
+
+  <div class="toolbar-row">
+    <button id="refresh-btn" class="secondary-btn" type="button">Tool Refresh</button>
+    <span id="refresh-status"></span>
+  </div>
+
+  <div class="tool-panel" id="tool-panel">
+    <div class="tool-panel-header">Available Tools</div>
+    <div id="tool-list"></div>
   </div>
 
   <div class="input-row">
@@ -223,21 +325,89 @@
 
 </div>
 
+<div class="toast" id="toast"></div>
+
 <script>
-  const sendBtn    = document.getElementById('send-btn');
-  const inputEl    = document.getElementById('user-input');
-  const statusEl   = document.getElementById('status');
-  const resultsEl  = document.getElementById('results');
-  const errEl      = document.getElementById('error-container');
+  const sendBtn     = document.getElementById('send-btn');
+  const inputEl     = document.getElementById('user-input');
+  const statusEl    = document.getElementById('status');
+  const resultsEl   = document.getElementById('results');
+  const errEl       = document.getElementById('error-container');
   const modelSelect = document.getElementById('model-select');
+  const refreshBtn  = document.getElementById('refresh-btn');
+  const refreshStat = document.getElementById('refresh-status');
+  const toolPanel   = document.getElementById('tool-panel');
+  const toolList    = document.getElementById('tool-list');
+  const toastEl     = document.getElementById('toast');
 
   const MODEL_KEY = 'langgraph_selected_model';
+  let _toastTimer = null;
 
-  // Populate the model dropdown from /api/models on page load.
+  // ---- Toast ----
+  function showToast(msg, type) {
+    toastEl.textContent = msg;
+    toastEl.className = 'toast show' + (type === 'error' ? ' error' : '');
+    clearTimeout(_toastTimer);
+    _toastTimer = setTimeout(() => { toastEl.className = 'toast'; }, 3000);
+  }
+
+  // ---- Tool list rendering ----
+  function renderToolList(categories) {
+    toolList.innerHTML = '';
+    for (const [cat, tools] of Object.entries(categories)) {
+      const catEl = document.createElement('div');
+      catEl.className = 'tool-category';
+
+      const nameEl = document.createElement('div');
+      nameEl.className = 'tool-category-name';
+      nameEl.textContent = cat;
+      catEl.appendChild(nameEl);
+
+      for (const tool of tools) {
+        const itemEl = document.createElement('div');
+        itemEl.className = 'tool-item';
+        itemEl.textContent = tool;
+        catEl.appendChild(itemEl);
+      }
+
+      toolList.appendChild(catEl);
+    }
+    toolPanel.style.display = 'block';
+  }
+
+  // ---- Tool Refresh ----
+  async function refreshTools() {
+    refreshBtn.disabled = true;
+    refreshStat.textContent = 'Refreshing…';
+    refreshStat.className = '';
+
+    try {
+      const resp = await fetch('/api/tools/refresh', { method: 'POST' });
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({ detail: resp.statusText }));
+        throw new Error(err.detail || 'HTTP ' + resp.status);
+      }
+      const data = await resp.json();
+      renderToolList(data.categories);
+      const catCount = Object.keys(data.categories).length;
+      refreshStat.textContent = data.total_tools + ' tools in ' + catCount + ' categories';
+      showToast('Loaded ' + data.total_tools + ' tools across ' + catCount + ' categories');
+    } catch (err) {
+      refreshStat.textContent = 'Refresh failed: ' + err.message;
+      refreshStat.className = 'error';
+      showToast('Refresh failed: ' + err.message, 'error');
+    } finally {
+      refreshBtn.disabled = false;
+    }
+  }
+
+  refreshBtn.addEventListener('click', refreshTools);
+
+  // ---- Models ----
   async function loadModels() {
     try {
       const resp = await fetch('/api/models');
-      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      if (!resp.ok) throw new Error('HTTP ' + resp.status);
       const data = await resp.json();
 
       modelSelect.innerHTML = '';
@@ -247,7 +417,6 @@
         const opt = document.createElement('option');
         opt.value = name;
         opt.textContent = name;
-        // Restore persisted selection, fall back to server-reported default.
         if (name === (saved || data.default)) opt.selected = true;
         modelSelect.appendChild(opt);
       });
@@ -264,16 +433,15 @@
     }
   }
 
-  // Persist selection to localStorage whenever the user changes it.
   modelSelect.addEventListener('change', () => {
     if (modelSelect.value) localStorage.setItem(MODEL_KEY, modelSelect.value);
   });
 
+  // ---- Chat ----
   async function send() {
     const userInput = inputEl.value.trim();
     if (!userInput) return;
 
-    // Reset UI
     sendBtn.disabled = true;
     statusEl.style.display = 'flex';
     resultsEl.style.display = 'none';
@@ -290,7 +458,7 @@
 
       if (!resp.ok) {
         const err = await resp.json().catch(() => ({ detail: resp.statusText }));
-        throw new Error(err.detail || `HTTP ${resp.status}`);
+        throw new Error(err.detail || 'HTTP ' + resp.status);
       }
 
       const data = await resp.json();
@@ -303,18 +471,18 @@
 
       const modeBadge = document.getElementById('mode-badge');
       modeBadge.innerHTML =
-        `Mode: <span class="badge ${data.mode}">${data.mode}</span>` +
-        ` &nbsp; Model: <code style="color:#718096;font-size:0.75rem">${escHtml(selectedModel || 'default')}</code>` +
-        ` &nbsp; ID: <code style="color:#718096;font-size:0.75rem">${data.request_id}</code>`;
+        'Mode: <span class="badge ' + data.mode + '">' + data.mode + '</span>' +
+        ' &nbsp; Model: <code style="color:#718096;font-size:0.75rem">' + escHtml(selectedModel || 'default') + '</code>' +
+        ' &nbsp; ID: <code style="color:#718096;font-size:0.75rem">' + data.request_id + '</code>';
 
       if (data.error) {
         errEl.innerHTML =
-          `<div class="error-banner">Agent error: ${escHtml(data.error)}</div>`;
+          '<div class="error-banner">Agent error: ' + escHtml(data.error) + '</div>';
       }
 
       resultsEl.style.display = 'flex';
     } catch (err) {
-      errEl.innerHTML = `<div class="error-banner">${escHtml(err.message)}</div>`;
+      errEl.innerHTML = '<div class="error-banner">' + escHtml(err.message) + '</div>';
       resultsEl.style.display = 'flex';
     } finally {
       statusEl.style.display = 'none';

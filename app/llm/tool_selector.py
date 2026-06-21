@@ -1,25 +1,29 @@
 """Pass 1 — LLM-driven MCP tool selection.
 
-Given user input and a registered set of tool definitions, asks the local
-Ollama LLM to choose the best tool and produce validated arguments.
+Given user input and a live ToolRegistry, asks the local Ollama LLM to choose
+the best tool and produce validated arguments.
 
 Flow:
-  1. Build a system prompt containing all tool descriptions + JSON schemas.
-  2. Call Ollama with a structured-output schema that forces valid JSON.
-  3. Parse the JSON response.
-  4. Verify the selected tool name exists in the registry.
-  5. Validate the arguments against the tool's Pydantic input schema.
-  6. Return a ToolCall with the validated name and arguments.
+  1. Read the current tool list from the registry (fresh on every select() call).
+  2. Build a system prompt containing all tool descriptions + JSON schemas.
+  3. Call Ollama with a structured-output schema that forces valid JSON.
+  4. Parse the JSON response.
+  5. Verify the selected tool name exists in the current registry snapshot.
+  6. Validate the arguments against the tool's Pydantic input schema.
+  7. Return a ToolCall with the validated name and arguments.
 """
 
 import json
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ValidationError
 
 from app.utils.errors import ToolSelectionError
 from app.utils.logging import get_logger
+
+if TYPE_CHECKING:
+    from app.llm.tool_registry import ToolRegistry
 
 log = get_logger(__name__)
 
@@ -100,14 +104,22 @@ class ToolCall(BaseModel):
 class ToolSelector:
     """Selects an MCP tool and generates validated arguments using a local LLM.
 
+    Reads the live tool list from the registry on every select() call, so tool
+    additions and removals via registry.reload() are picked up immediately without
+    rebuilding the selector.
+
     Args:
-        ollama_client: An OllamaClient instance (injected).
-        tool_definitions: List of ToolDefinition objects describing available tools.
+        ollama_client:  An OllamaClient instance (injected).
+        tool_registry:  A ToolRegistry instance shared with MCPExecutor.
     """
 
-    def __init__(self, ollama_client: Any, tool_definitions: list[ToolDefinition]) -> None:
+    def __init__(self, ollama_client: Any, tool_registry: "ToolRegistry") -> None:
         self._llm = ollama_client
-        self._tools: dict[str, ToolDefinition] = {t.name: t for t in tool_definitions}
+        self._registry = tool_registry
+
+    def _current_tools(self) -> dict[str, ToolDefinition]:
+        """Return a fresh snapshot of tools from the live registry."""
+        return {d.name: d for d in self._registry.definitions}
 
     def build_messages(self, user_input: str, context: dict[str, Any] | None = None) -> list[dict]:
         """Build the Ollama chat messages for the tool-selection prompt.
@@ -119,8 +131,9 @@ class ToolSelector:
         Returns:
             A list of OpenAI-style message dicts ready to send to Ollama.
         """
+        tools = self._current_tools()
         tool_blocks: list[str] = []
-        for tool in self._tools.values():
+        for tool in tools.values():
             schema_str = json.dumps(tool.json_schema(), indent=2)
             tool_blocks.append(
                 f"### {tool.name}\n"
@@ -153,8 +166,16 @@ class ToolSelector:
             {"role": "user", "content": user_content},
         ]
 
-    async def select(self, user_input: str, context: dict[str, Any] | None = None, model: str | None = None) -> ToolCall:
+    async def select(
+        self,
+        user_input: str,
+        context: dict[str, Any] | None = None,
+        model: str | None = None,
+    ) -> ToolCall:
         """Ask the LLM to select a tool and return a validated ToolCall.
+
+        Reads the current tool list from the registry on each call, so live
+        registry reloads are reflected without rebuilding the selector.
 
         Args:
             user_input: Raw user request string.
@@ -180,17 +201,18 @@ class ToolSelector:
             log.error("tool_selector_json_error", snippet=raw[:200])
             raise ToolSelectionError(f"LLM returned non-JSON: {exc}") from exc
 
-        # --- Validate tool name ---
+        # --- Validate tool name against live registry snapshot ---
         tool_name: str = data.get("tool_name", "")
-        if tool_name not in self._tools:
+        current_tools = self._current_tools()
+        if tool_name not in current_tools:
             raise ToolSelectionError(
                 f"LLM selected unknown tool '{tool_name}'. "
-                f"Available: {sorted(self._tools.keys())}"
+                f"Available: {sorted(current_tools.keys())}"
             )
 
         # --- Validate arguments against Pydantic schema ---
         raw_args: dict = data.get("arguments", {})
-        tool_def = self._tools[tool_name]
+        tool_def = current_tools[tool_name]
         try:
             validated_model = tool_def.input_schema_class(**raw_args)
         except ValidationError as exc:

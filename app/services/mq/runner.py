@@ -14,7 +14,7 @@ from pathlib import Path
 from app.graph.graph import build_llm_graph
 from app.llm.ollama_client import OllamaClient
 from app.llm.response_synthesizer import ResponseSynthesizer
-from app.llm.tool_registry import build_tool_definitions
+from app.llm.tool_registry import ToolRegistry
 from app.llm.tool_selector import ToolSelector
 from app.services.mcp_executor import MCPExecutor
 from app.services.mq.consumer import MQConsumer
@@ -35,10 +35,13 @@ async def main() -> None:
         return
 
     llm = OllamaClient()
-    selector = ToolSelector(llm, build_tool_definitions())
+    registry = ToolRegistry()
+    registry.reload()
+    selector = ToolSelector(llm, registry)
     executor = MCPExecutor(
         sandbox_root=Path(settings.sandbox_root).resolve(),
         llm_client=llm,
+        tool_registry=registry,
     )
     synthesizer = ResponseSynthesizer(llm)
     graph = build_llm_graph(selector, executor, synthesizer)

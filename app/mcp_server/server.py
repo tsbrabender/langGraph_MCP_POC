@@ -1,21 +1,17 @@
-"""FastMCP server entry point — registers all MCP tools and starts the server.
+"""FastMCP server entry point — registers all MCP tools via dynamic discovery.
 
 Run with:
     python -m app.mcp_server.server
 """
 
+import inspect
 from pathlib import Path
 
 from fastmcp import FastMCP
 
 from app.llm.ollama_client import OllamaClient
-from app.mcp_server.tools import (
-    extract_metadata as _extract_metadata,
-    list_files as _list_files,
-    read_file as _read_file,
-    search_files as _search_files,
-    summarize_file as _summarize_file,
-)
+from app.mcp_server.tool_loader import discover_all_tools
+from app.mcp_server.tool_spec import ToolSpec
 from app.utils.config import get_settings
 from app.utils.logging import configure_logging, get_logger
 
@@ -37,70 +33,47 @@ _sandbox_root.mkdir(parents=True, exist_ok=True)
 _llm = OllamaClient()
 
 
+def _make_mcp_wrapper(spec: ToolSpec, sandbox_root: Path, llm: OllamaClient):
+    """Return an async wrapper function suitable for registration with FastMCP.
+
+    Injects sandbox_root and llm dependencies based on the handler's signature
+    so callers only need to pass the tool's declared input arguments.
+    """
+    sig_params = inspect.signature(spec.handler).parameters
+    needs_sandbox = "sandbox_root" in sig_params
+    needs_llm = "llm" in sig_params
+
+    async def wrapper(**kwargs):
+        if needs_sandbox:
+            kwargs["sandbox_root"] = sandbox_root
+        if needs_llm:
+            kwargs["llm"] = llm
+        result = await spec.handler(**kwargs)
+        return result.model_dump()
+
+    wrapper.__name__ = spec.name
+    wrapper.__doc__ = spec.description
+    return wrapper
+
+
 # ---------------------------------------------------------------------------
-# Tool registrations — thin wrappers that inject sandbox_root and LLM client.
-# The implementation logic lives in app/mcp_server/tools/*.py and is
-# unit-tested independently of FastMCP.
+# Dynamic tool registration — discovers all tools at server startup.
 # ---------------------------------------------------------------------------
 
+_all_tools = discover_all_tools()
+_total = sum(len(v) for v in _all_tools.values())
 
-@mcp.tool()
-async def list_files(directory: str = ".") -> dict:
-    """List files and subdirectories at the given path within the sandbox.
+for _category_name, _specs in _all_tools.items():
+    for _spec in _specs:
+        _wrapped = _make_mcp_wrapper(_spec, _sandbox_root, _llm)
+        mcp.tool()(_wrapped)
+        log.info("mcp_tool_registered", category=_category_name, tool=_spec.name)
 
-    Args:
-        directory: Path relative to the sandbox root (default: sandbox root itself).
-    """
-    result = await _list_files.run(directory, _sandbox_root)
-    return result.model_dump()
-
-
-@mcp.tool()
-async def read_file(path: str) -> dict:
-    """Read and return the text content of a file within the sandbox.
-
-    Args:
-        path: File path relative to the sandbox root.
-    """
-    result = await _read_file.run(path, _sandbox_root)
-    return result.model_dump()
-
-
-@mcp.tool()
-async def search_files(pattern: str, directory: str = ".") -> dict:
-    """Search for files matching a glob pattern within the sandbox.
-
-    Args:
-        pattern: Glob pattern, e.g. '*.txt' or '**/*.py'.
-        directory: Directory to search, relative to the sandbox root (default: root).
-    """
-    result = await _search_files.run(pattern, directory, _sandbox_root)
-    return result.model_dump()
-
-
-@mcp.tool()
-async def summarize_file(path: str) -> dict:
-    """Summarize the content of a file using the local Ollama LLM.
-
-    This tool is non-deterministic — the LLM may produce different summaries
-    for the same file across calls.
-
-    Args:
-        path: File path relative to the sandbox root.
-    """
-    result = await _summarize_file.run(path, _sandbox_root, _llm)
-    return result.model_dump()
-
-
-@mcp.tool()
-async def extract_metadata(path: str) -> dict:
-    """Return file system metadata for a path within the sandbox.
-
-    Args:
-        path: File or directory path relative to the sandbox root.
-    """
-    result = await _extract_metadata.run(path, _sandbox_root)
-    return result.model_dump()
+log.info(
+    "mcp_tools_registration_complete",
+    categories=list(_all_tools.keys()),
+    total=_total,
+)
 
 
 if __name__ == "__main__":
@@ -109,6 +82,7 @@ if __name__ == "__main__":
         host=settings.mcp_server_host,
         port=settings.mcp_server_port,
         sandbox_root=str(_sandbox_root),
+        total_tools=_total,
     )
     mcp.run(
         transport="streamable-http",

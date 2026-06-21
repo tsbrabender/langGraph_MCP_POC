@@ -1,11 +1,5 @@
-"""MCP tool modules — imported by server.py for registration."""
+"""MCP tool packages — organized by category subdirectory.
 
-from app.mcp_server.tools import (
-    extract_metadata,
-    list_files,
-    read_file,
-    search_files,
-    summarize_file,
-)
-
-__all__ = ["list_files", "read_file", "search_files", "summarize_file", "extract_metadata"]
+Tool discovery is handled dynamically by app.mcp_server.tool_loader.
+Do not import tool modules directly from this package.
+"""
