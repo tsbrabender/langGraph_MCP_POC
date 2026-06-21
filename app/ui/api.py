@@ -115,9 +115,16 @@ def create_app(
             app.state.db_client = _db
             log.info("ui_db_connected")
 
+        # --- Cache client ---
+        if app.state.db_client is not None and not hasattr(app.state, "cache_client"):
+            from app.services.cache.sqlite_cache import SQLiteCacheClient
+
+            app.state.cache_client = SQLiteCacheClient(app.state.db_client)
+            log.info("ui_cache_client_ready")
+
         # --- Graph ---
         if app.state.graph is None:
-            from app.graph.graph import build_llm_graph
+            from app.graph.graph import build_context_aware_graph
             from app.llm.ollama_client import OllamaClient
             from app.llm.response_synthesizer import ResponseSynthesizer
             from app.llm.tool_registry import build_tool_definitions
@@ -126,15 +133,21 @@ def create_app(
 
             llm = OllamaClient()
             selector = ToolSelector(llm, build_tool_definitions())
+            cache_client = getattr(app.state, "cache_client", None)
             executor = MCPExecutor(
                 sandbox_root=Path(settings.sandbox_root).resolve(),
                 llm_client=llm,
+                cache_client=cache_client,
             )
             synthesizer = ResponseSynthesizer(llm)
-            app.state.graph = build_llm_graph(
-                selector, executor, synthesizer, db_client=app.state.db_client
+            app.state.graph = build_context_aware_graph(
+                selector,
+                executor,
+                synthesizer,
+                cache_client=cache_client,
+                db_client=app.state.db_client,
             )
-            log.info("ui_graph_built")
+            log.info("ui_graph_built", mode="context_aware")
 
         # --- MQ producer ---
         if settings.mq_enabled and app.state.producer is None:
