@@ -141,6 +141,29 @@
   }
 
   #mode-badge { margin-top: -0.5rem; text-align: right; font-size: 0.8rem; color: #4a5568; }
+
+  .model-row {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+  }
+  .model-row label {
+    color: #a0aec0;
+    font-size: 0.85rem;
+    white-space: nowrap;
+  }
+  select#model-select {
+    flex: 1;
+    background: #1a202c;
+    border: 1px solid #2d3748;
+    border-radius: 8px;
+    color: #e2e8f0;
+    font-size: 0.9rem;
+    padding: 0.5rem 0.75rem;
+    cursor: pointer;
+  }
+  select#model-select:focus { outline: none; border-color: #4a9eff; }
+  select#model-select:disabled { color: #4a5568; cursor: default; }
 </style>
 </head>
 <body>
@@ -151,6 +174,13 @@
 </header>
 
 <div class="chat-box">
+
+  <div class="model-row">
+    <label for="model-select">Model</label>
+    <select id="model-select" disabled>
+      <option value="">Loading models&hellip;</option>
+    </select>
+  </div>
 
   <div class="input-row">
     <textarea id="user-input"
@@ -194,11 +224,50 @@
 </div>
 
 <script>
-  const sendBtn   = document.getElementById('send-btn');
-  const inputEl   = document.getElementById('user-input');
-  const statusEl  = document.getElementById('status');
-  const resultsEl = document.getElementById('results');
-  const errEl     = document.getElementById('error-container');
+  const sendBtn    = document.getElementById('send-btn');
+  const inputEl    = document.getElementById('user-input');
+  const statusEl   = document.getElementById('status');
+  const resultsEl  = document.getElementById('results');
+  const errEl      = document.getElementById('error-container');
+  const modelSelect = document.getElementById('model-select');
+
+  const MODEL_KEY = 'langgraph_selected_model';
+
+  // Populate the model dropdown from /api/models on page load.
+  async function loadModels() {
+    try {
+      const resp = await fetch('/api/models');
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const data = await resp.json();
+
+      modelSelect.innerHTML = '';
+      const saved = localStorage.getItem(MODEL_KEY);
+
+      data.models.forEach((name) => {
+        const opt = document.createElement('option');
+        opt.value = name;
+        opt.textContent = name;
+        // Restore persisted selection, fall back to server-reported default.
+        if (name === (saved || data.default)) opt.selected = true;
+        modelSelect.appendChild(opt);
+      });
+
+      modelSelect.disabled = data.models.length === 0;
+      if (data.models.length === 0) {
+        const opt = document.createElement('option');
+        opt.textContent = 'No models found';
+        modelSelect.appendChild(opt);
+      }
+    } catch (err) {
+      modelSelect.innerHTML = '<option value="">Could not load models</option>';
+      console.error('Failed to load models:', err);
+    }
+  }
+
+  // Persist selection to localStorage whenever the user changes it.
+  modelSelect.addEventListener('change', () => {
+    if (modelSelect.value) localStorage.setItem(MODEL_KEY, modelSelect.value);
+  });
 
   async function send() {
     const userInput = inputEl.value.trim();
@@ -210,11 +279,13 @@
     resultsEl.style.display = 'none';
     errEl.innerHTML = '';
 
+    const selectedModel = modelSelect.value || null;
+
     try {
       const resp = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ user_input: userInput }),
+        body: JSON.stringify({ user_input: userInput, model: selectedModel }),
       });
 
       if (!resp.ok) {
@@ -233,6 +304,7 @@
       const modeBadge = document.getElementById('mode-badge');
       modeBadge.innerHTML =
         `Mode: <span class="badge ${data.mode}">${data.mode}</span>` +
+        ` &nbsp; Model: <code style="color:#718096;font-size:0.75rem">${escHtml(selectedModel || 'default')}</code>` +
         ` &nbsp; ID: <code style="color:#718096;font-size:0.75rem">${data.request_id}</code>`;
 
       if (data.error) {
@@ -262,6 +334,8 @@
   inputEl.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
   });
+
+  loadModels();
 </script>
 </body>
 </html>
