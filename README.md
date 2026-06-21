@@ -25,6 +25,8 @@ When a user asks about a configured topic (e.g. "tell me about dyslexia", "what 
 
 The web UI includes a **model selection dropdown** populated dynamically from your local Ollama installation (`GET /api/models`). The selected model is sent with each request and used for both the tool-selection pass and the response-synthesis pass. The selection is remembered in `localStorage` across page refreshes. The `OLLAMA_MODEL` environment variable sets the startup default used when no model is explicitly chosen.
 
+A **Tool Refresh button** lets you reload the tool registry at runtime (`POST /api/tools/refresh`) without restarting the server. The UI shows the loaded tools grouped by category with a toast notification confirming the count.
+
 ---
 
 ## Architecture
@@ -220,7 +222,7 @@ All settings live in `.env` (copy from `.env.example`).
 ## Running tests
 
 ```bash
-# All tests (244 total, no live Ollama or Redis needed)
+# All tests (304 total, no live Ollama or Redis needed)
 pytest
 
 # Unit tests only
@@ -237,15 +239,19 @@ Test counts by module:
 
 | File | Tests | What is covered |
 |---|---|---|
-| `test_tools.py` | 49 | 5 file-system MCP tools + sandbox path enforcement |
+| `test_tools.py` | 58 | All 10 MCP tools + sandbox path enforcement |
 | `test_llm.py` | 34 | ToolSelector, ResponseSynthesizer, ToolRegistry |
+| `test_tool_loader.py` | 14 | Dynamic tool discovery — categories, tools, error handling |
+| `test_tool_registry.py` | 13 | ToolRegistry reload, thread safety, property snapshots |
+| `test_tool_selector_refresh.py` | 10 | ToolSelector sees live registry changes after reload |
 | `test_graph_nodes.py` | 42 | 6 original LangGraph nodes + 3 original routing functions |
 | `test_graph.py` (integration) | 18 | Full `ainvoke()` round-trip, llm and hybrid graph variants |
+| `test_tool_refresh.py` (integration) | 10 | `POST /api/tools/refresh` endpoint end-to-end |
 | `test_mq.py` | 40 | MQ schemas, producer, consumer, idempotency |
 | `test_ui.py` | 36 | FastAPI endpoints, direct + MQ modes, history |
 | `test_db.py` | 25 | SQLiteClient, WorkflowRun, migrations, node persistence |
 
-> **Tests pending** — the following additions do not yet have test coverage: 4 context-retrieval MCP tools (`get_topic_resources`, `fetch_web_resource`, `get_cached_resource`, `refresh_cache`), 2 new graph nodes (`detect_topic`, `retrieve_context`), the cache service (`SQLiteCacheClient`), `TopicMap` loader, and `build_context_aware_graph()`.
+> **Tests pending** — the following additions do not yet have test coverage: 2 new graph nodes (`detect_topic`, `retrieve_context`), the cache service (`SQLiteCacheClient`), `TopicMap` loader, and `build_context_aware_graph()`.
 
 ---
 
@@ -256,6 +262,7 @@ Test counts by module:
 | `GET` | `/` | Web UI (HTML) |
 | `GET` | `/api/models` | List of Ollama models available on this machine |
 | `POST` | `/api/chat` | Submit a request; returns `ChatResponse` |
+| `POST` | `/api/tools/refresh` | Hot-reload the tool registry; returns category/count summary |
 | `GET` | `/api/health` | Liveness check — returns mode and MQ status |
 | `GET` | `/api/history?limit=N` | Recent workflow runs from SQLite |
 
@@ -269,6 +276,22 @@ Test counts by module:
 ```
 
 Returns every model currently available in the local Ollama installation, sorted alphabetically, plus the server-configured default (`OLLAMA_MODEL`). Returns `503` if Ollama is unreachable.
+
+### `POST /api/tools/refresh`
+
+Reloads all tool packages from disk without restarting the server. Safe to call at any time; uses an internal lock so concurrent requests are serialised.
+
+**Response:**
+```json
+{
+  "categories": {
+    "file_ops": ["list_files", "read_file", "search_files", "extract_metadata"],
+    "summarization": ["summarize_file", "summarize_text"],
+    "context_retrieval": ["get_topic_resources", "fetch_web_resource", "get_cached_resource", "refresh_cache"]
+  },
+  "total_tools": 10
+}
+```
 
 ### `POST /api/chat`
 
@@ -299,19 +322,27 @@ Returns every model currently available in the local Ollama installation, sorted
 
 ## Available MCP tools
 
-### File-system tools (sandboxed to `SANDBOX_ROOT`)
+Tools are grouped into three categories. Each tool is a self-contained package under `app/mcp_server/tools/<category>/<tool_name>/` and is discovered automatically at startup and on `POST /api/tools/refresh`.
+
+### `file_ops` — sandboxed to `SANDBOX_ROOT`
 
 | Tool | What it does | Key limits |
 |---|---|---|
 | `list_files` | List directory contents | Sorted: dirs first, then files |
 | `read_file` | Read a file's text content | Max 1 MB; truncates silently |
-| `search_files` | Glob-pattern file search | Max 500 results |
+| `search_files` | Glob-pattern file search | Max 500 results; `directory` defaults to `.` |
 | `extract_metadata` | Size, timestamps, permissions | Works on files and directories |
-| `summarize_file` | LLM summary of a file | Reads up to 4 000 chars |
 
 Path traversal (`../../etc/passwd`) raises `SandboxViolationError`.
 
-### Context-retrieval tools
+### `summarization`
+
+| Tool | What it does | Key limits |
+|---|---|---|
+| `summarize_file` | LLM summary of a file's content | Reads up to 4 000 chars; flags `truncated` when clipped |
+| `summarize_text` | LLM summary of arbitrary text | Configurable `max_chars` (100–16 000, default 4 000) |
+
+### `context_retrieval`
 
 | Tool | What it does | Key limits |
 |---|---|---|
@@ -329,10 +360,26 @@ Context-retrieval tools are primarily orchestrated by the `retrieve_context` nod
 ```
 app/
   mcp_server/
-    tools/              One file per MCP tool (9 tools + shared sandbox helper)
+    tool_spec.py        ToolSpec dataclass — contract between tools and the loader
+    tool_loader.py      discover_categories(), discover_tools(), discover_all_tools()
+    tools/
+      _sandbox.py       resolve_safe_path() — shared path-traversal guard
+      file_ops/         Category: sandboxed file-system tools
+        list_files/       tool.py, schemas.py, __init__.py
+        read_file/
+        search_files/
+        extract_metadata/
+      summarization/    Category: LLM-backed summarisation
+        summarize_file/
+        summarize_text/
+      context_retrieval/ Category: topic-aware web-resource tools
+        get_topic_resources/
+        fetch_web_resource/
+        get_cached_resource/
+        refresh_cache/
     resources/
       topic_map.yaml    Topic keyword lists, resource URLs, and per-topic TTL settings
-    server.py           FastMCP server entry point
+    server.py           FastMCP server — registers all tools via dynamic discovery
   graph/
     nodes/              One file per LangGraph node (8 nodes total)
     edges/routing.py    Conditional edge logic (5 routing functions)
@@ -340,11 +387,11 @@ app/
     graph.py            build_llm_graph(), build_hybrid_graph(), build_context_aware_graph()
   llm/
     ollama_client.py    Async Ollama wrapper (per-call model override)
-    tool_selector.py    Pass 1 — structured JSON tool call from LLM
+    tool_selector.py    Pass 1 — structured JSON tool call; reads live ToolRegistry
     response_synthesizer.py  Pass 2 — natural-language answer, enriched with context_documents
-    tool_registry.py    Connects LLM layer to all 9 MCP tool schemas
+    tool_registry.py    ToolRegistry class — thread-safe, hot-reloadable (replaces build_tool_definitions)
   services/
-    mcp_executor.py     Dispatches tool calls; injects llm_client and cache_client
+    mcp_executor.py     Dynamic dispatch via inspect.signature + ToolSpec.dependencies
     cache/
       cache_client.py   CacheClient interface and ResourceCacheEntry data class
       sqlite_cache.py   SQLite-backed cache (get / set / delete)
@@ -358,8 +405,8 @@ app/
       consumer.py       BRPOP loop with idempotency (Redis SET NX)
       runner.py         python -m app.services.mq.runner entry point
   ui/
-    api.py              FastAPI app (create_app factory for testing)
-    static/index.html   Single-page web UI with model selection dropdown
+    api.py              FastAPI app; includes POST /api/tools/refresh
+    static/index.html   Web UI — model dropdown, Tool Refresh button, tool panel
   utils/
     config.py           Settings from .env via pydantic-settings
     topic_config.py     TopicMap loader and Pydantic validator for topic_map.yaml
@@ -367,7 +414,7 @@ app/
     errors.py           Typed exception hierarchy
 tests/
   unit/                 Pure tests — no Ollama, Redis, or file system
-  integration/          End-to-end graph tests with real file I/O
+  integration/          End-to-end graph and API tests with real file I/O
   fixtures/sandbox/     Static files used by integration tests
 sandbox/                Default agent working directory (gitignored data)
 ```
@@ -378,7 +425,7 @@ sandbox/                Default agent working directory (gitignored data)
 
 See [CLAUDE.md](CLAUDE.md) for the full specification including:
 
-- **Add a new MCP tool** — one file in `app/mcp_server/tools/`, register in `server.py` and `tool_registry.py`
+- **Add a new MCP tool** — create a package under the right category (`tools/<category>/<name>/`), add `tool.py` + `schemas.py` + `__init__.py` with `get_tool() -> ToolSpec`, then call `POST /api/tools/refresh`. No changes to `server.py` or `tool_registry.py` needed.
 - **Add a new LangGraph node** — implement `make_node(dep) -> Callable[[GraphState], dict]`, wire into `graph.py`
 - **Add a new database table** — new migration in `app/services/db/migrations/`, query helpers in `sqlite_client.py`
 - **Add a new message queue consumer** — handler in `consumer.py`, ensure idempotency

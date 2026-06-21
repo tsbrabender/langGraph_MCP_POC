@@ -80,7 +80,7 @@ User Input
                   Final Response
 ```
 
-**Pass 1 — Tool Selection:** The LLM receives user input and all 9 registered MCP tool schemas. Returns a structured JSON tool call validated against the tool's Pydantic schema before execution.
+**Pass 1 — Tool Selection:** The LLM receives user input and all 10 registered MCP tool schemas (read live from `ToolRegistry`). Returns a structured JSON tool call validated against the tool's Pydantic schema before execution.
 
 **Pass 2 — Response Synthesis:** The LLM receives the original user input, MCP tool output, and — when a topic was detected — the `context_documents` from `retrieve_context` as grounding material.
 
@@ -106,11 +106,27 @@ This hybrid model preserves the natural-language flexibility of LLM-driven workf
 /project-root
     /app
         /mcp_server
-            /tools              # Individual MCP tool definitions (9 tools)
+            tool_spec.py        # ToolSpec dataclass — contract between tools and the loader
+            tool_loader.py      # discover_categories(), discover_tools(), discover_all_tools()
+            /tools
+                /_sandbox.py    # resolve_safe_path() — shared path-traversal guard
+                /file_ops/      # Category: sandboxed file-system tools
+                    /list_files/        list_files.tool + schemas + __init__
+                    /read_file/         read_file.tool + schemas + __init__
+                    /search_files/      search_files.tool + schemas + __init__
+                    /extract_metadata/  extract_metadata.tool + schemas + __init__
+                /summarization/ # Category: LLM-backed summarisation tools
+                    /summarize_file/    summarize_file.tool + schemas + __init__
+                    /summarize_text/    summarize_text.tool + schemas + __init__
+                /context_retrieval/  # Category: topic-aware web-resource tools
+                    /get_topic_resources/
+                    /fetch_web_resource/
+                    /get_cached_resource/
+                    /refresh_cache/
             /resources
                 topic_map.yaml  # Topic → keyword list + resource URLs + TTL
             /prompts            # MCP prompt templates (placeholder)
-            server.py           # FastMCP server entry point
+            server.py           # FastMCP server — registers all tools dynamically
         /graph
             /nodes              # LangGraph node functions (8 nodes, make_node factory)
             /edges
@@ -120,11 +136,11 @@ This hybrid model preserves the natural-language flexibility of LLM-driven workf
                                 #   build_context_aware_graph()
         /llm
             ollama_client.py        # Async Ollama wrapper (per-call model override)
-            tool_selector.py        # Pass 1 — LLM tool selection with schema validation
+            tool_selector.py        # Pass 1 — LLM tool selection; reads live ToolRegistry
             response_synthesizer.py # Pass 2 — grounded synthesis with optional context_documents
-            tool_registry.py        # Connects LLM layer to all 9 MCP tool schemas
+            tool_registry.py        # ToolRegistry class — thread-safe, hot-reloadable
         /services
-            mcp_executor.py         # Dispatches tool calls (injects llm_client, cache_client)
+            mcp_executor.py         # Dynamic dispatch via inspect.signature + ToolRegistry
             /cache
                 cache_client.py     # CacheClient interface + ResourceCacheEntry data class
                 sqlite_cache.py     # SQLite-backed get / set / delete
@@ -140,9 +156,9 @@ This hybrid model preserves the natural-language flexibility of LLM-driven workf
                 runner.py           # python -m app.services.mq.runner entry point
                 schemas.py          # RequestMessage / ResponseMessage
         /ui
-            api.py              # FastAPI app (create_app factory)
+            api.py              # FastAPI app (create_app factory); POST /api/tools/refresh
             /static
-                index.html      # Single-page web UI with model selection dropdown
+                index.html      # Single-page web UI: model dropdown, Tool Refresh button
         /utils
             config.py           # pydantic-settings — reads from .env
             topic_config.py     # TopicMap loader and validator for topic_map.yaml
@@ -150,7 +166,7 @@ This hybrid model preserves the natural-language flexibility of LLM-driven workf
             errors.py           # Typed exception hierarchy
     /tests
         /unit                   # Pure tests — no Ollama, Redis, or file system
-        /integration            # End-to-end graph tests with real file I/O
+        /integration            # End-to-end graph and API tests with real file I/O
     CLAUDE.md
     pyproject.toml
     README.md
@@ -202,11 +218,13 @@ This hybrid model preserves the natural-language flexibility of LLM-driven workf
 
 ### MCP Tools (`app/mcp_server/tools/`)
 
-- Each tool lives in its own file.
-- Tools must declare **explicit Pydantic input and output schemas**.
+- Tools are organised into **category subdirectories** (`file_ops/`, `summarization/`, `context_retrieval/`). Each tool is its own package with three files: `tool.py` (handler), `schemas.py` (Pydantic I/O models), `__init__.py` (exports `get_tool() -> ToolSpec`).
+- Every tool package must export `get_tool() -> ToolSpec`. The `ToolSpec` dataclass declares the tool's name, category, description, input schema class, handler callable, and optional `dependencies` dict (maps parameter names to other tool names resolved at dispatch time).
+- Tools must declare **explicit Pydantic input and output schemas** in `schemas.py`.
 - Tools must be **deterministic for the same inputs** unless explicitly documented as non-deterministic (e.g., live web search).
 - Tools may call external APIs only when enabled by config.
 - No shared mutable state between tools.
+- To add a new tool: create a new package under the appropriate category, implement `get_tool()`, and restart the server (or call `POST /api/tools/refresh`). No changes to `server.py` or `tool_registry.py` are needed — discovery is automatic.
 
 ### LangGraph Nodes (`app/graph/nodes/`)
 
@@ -230,7 +248,7 @@ This hybrid model preserves the natural-language flexibility of LLM-driven workf
 - **Ollama must be running** as a local service before the LangGraph workflow starts. Pull at least one model with `ollama pull <name>` before starting.
 - **`OLLAMA_MODEL`** sets the server-wide default model used when a request carries no `model` field. The web UI dropdown lets users override this per-request without restarting the server; the list of available models is fetched live from Ollama via `GET /api/models`.
 - **FastMCP server** runs as a separate long-lived process, independent of the LangGraph executor.
-- **MCP tool dispatch** is handled by `MCPExecutor` (`app/services/mcp_executor.py`), which calls tool functions via direct Python import rather than the MCP client protocol. The FastMCP server (`app/mcp_server/server.py`) exists as a separately deployable process if protocol-level isolation is required.
+- **MCP tool dispatch** is handled by `MCPExecutor` (`app/services/mcp_executor.py`), which resolves tools from `ToolRegistry` and calls handlers via `inspect.signature`-based injection (injects `sandbox_root`, `llm`, `cache_client` and resolves `ToolSpec.dependencies` at dispatch time). The FastMCP server (`app/mcp_server/server.py`) exists as a separately deployable process if protocol-level isolation is required.
 - **MCP tools may call external internet APIs** when the tool is configured and network access is available.
 - **SQLite** is the default and only required database — no separate DB server needed.
 - **Message queue is optional** — the system functions without it; MQ is added when async fan-out or background workers are needed.
@@ -243,11 +261,15 @@ This hybrid model preserves the natural-language flexibility of LLM-driven workf
 
 ### Add a New MCP Tool
 
-1. Create a new file in `app/mcp_server/tools/`.
-2. Define Pydantic input and output schemas.
-3. Register the tool in `server.py` using the FastMCP decorator or registration API.
-4. Add the tool schema to the tool-selection prompt in `tool_selector.py`.
-5. Write a unit test in `tests/unit/`.
+1. Choose or create a category directory under `app/mcp_server/tools/` (e.g. `file_ops/`, `summarization/`, `context_retrieval/`).
+2. Create a new package directory: `app/mcp_server/tools/<category>/<tool_name>/`.
+3. Add three files:
+   - `schemas.py` — Pydantic input and output models.
+   - `tool.py` — `async def run(...)` handler; declare only the parameters you need (`sandbox_root`, `llm`, `cache_client` are injected automatically by `MCPExecutor` when present in the signature).
+   - `__init__.py` — exports `get_tool() -> ToolSpec` pointing at your schema and handler.
+4. If the tool depends on another tool's handler (e.g. `refresh_cache` needs `fetch_web_resource`), declare it in `ToolSpec.dependencies = {"param_name": "other_tool_name"}`.
+5. Restart the server **or** call `POST /api/tools/refresh` — `discover_all_tools()` picks up the new package automatically. No changes to `server.py` or `tool_registry.py` are needed.
+6. Write a unit test in `tests/unit/test_tools.py`.
 
 ### Add a New LangGraph Node
 
@@ -321,8 +343,11 @@ The hybrid pattern is the default approach in this project. The fully LLM-driven
 
 | Concern | Location |
 |---|---|
-| MCP tools (file-system) | `app/mcp_server/tools/` (list_files, read_file, search_files, extract_metadata, summarize_file) |
-| MCP tools (context retrieval) | `app/mcp_server/tools/` (get_topic_resources, fetch_web_resource, get_cached_resource, refresh_cache) |
+| MCP tools (file-system) | `app/mcp_server/tools/file_ops/` (list_files, read_file, search_files, extract_metadata) |
+| MCP tools (summarisation) | `app/mcp_server/tools/summarization/` (summarize_file, summarize_text) |
+| MCP tools (context retrieval) | `app/mcp_server/tools/context_retrieval/` (get_topic_resources, fetch_web_resource, get_cached_resource, refresh_cache) |
+| Tool contract dataclass | `app/mcp_server/tool_spec.py` |
+| Dynamic tool discovery | `app/mcp_server/tool_loader.py` |
 | MCP server entry | `app/mcp_server/server.py` |
 | MCP tool dispatcher | `app/services/mcp_executor.py` |
 | Topic-to-URL config | `app/mcp_server/resources/topic_map.yaml` |
@@ -332,12 +357,12 @@ The hybrid pattern is the default approach in this project. The fully LLM-driven
 | Ollama client | `app/llm/ollama_client.py` |
 | Tool selection logic | `app/llm/tool_selector.py` |
 | Response synthesis | `app/llm/response_synthesizer.py` |
-| Tool registry (LLM ↔ MCP bridge) | `app/llm/tool_registry.py` |
+| Live tool registry (LLM ↔ MCP bridge) | `app/llm/tool_registry.py` |
 | Graph nodes | `app/graph/nodes/` |
 | Graph state schema | `app/graph/state.py` |
 | Graph wiring | `app/graph/graph.py` |
-| API + model selection endpoint | `app/ui/api.py` |
-| Web UI + model dropdown | `app/ui/static/index.html` |
+| API + model selection + tool refresh | `app/ui/api.py` |
+| Web UI (model dropdown, tool panel) | `app/ui/static/index.html` |
 | Database helpers | `app/services/db/sqlite_client.py` |
 | MQ publish | `app/services/mq/producer.py` |
 | MQ consume | `app/services/mq/consumer.py` |
