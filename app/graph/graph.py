@@ -28,14 +28,17 @@ from app.graph.edges.routing import (
     after_intent_classification,
     after_tool_invocation,
     after_tool_selection,
+    after_topic_detection,
 )
 from app.graph.nodes import (
     classify_intent,
+    detect_topic,
     finalize_response,
     ingest_user_input,
     llm_response_synthesis,
     llm_tool_selection,
     mcp_tool_invocation,
+    retrieve_context,
 )
 from app.graph.state import GraphState
 from app.utils.logging import get_logger
@@ -170,4 +173,97 @@ def build_hybrid_graph(
     workflow.add_edge("finalize_response", END)
 
     log.info("graph_compiled", mode="hybrid")
+    return workflow.compile()
+
+
+def build_context_aware_graph(
+    selector: Any,
+    executor: Any,
+    synthesizer: Any,
+    cache_client: Any,
+    db_client: Any | None = None,
+):
+    """Build and compile the context-aware hybrid graph.
+
+    Extends build_hybrid_graph() with two new nodes inserted between
+    ingest_user_input and classify_intent:
+
+      detect_topic     — keyword scan against topic_map.yaml; sets state["topic"]
+      retrieve_context — fetches and caches topic resources; sets state["context_documents"]
+
+    Full flow:
+        ingest_user_input
+            → detect_topic
+                → [topic found] → retrieve_context
+                                      → classify_intent
+                → [no topic]   → classify_intent
+            → classify_intent
+                → [full match] → mcp_tool_invocation
+                                     → llm_response_synthesis  ← context_documents injected
+                                         → finalize_response → END
+                → [no match]   → llm_tool_selection
+                                     → [error] → finalize_response → END
+                                     → [ok]    → mcp_tool_invocation
+                                                     → llm_response_synthesis
+                                                         → finalize_response → END
+
+    Args:
+        selector:     A ToolSelector instance.
+        executor:     An MCPExecutor instance (must have cache_client set).
+        synthesizer:  A ResponseSynthesizer instance.
+        cache_client: A connected SQLiteCacheClient (or compatible backend).
+        db_client:    Optional SQLiteClient for workflow history persistence.
+
+    Returns:
+        A compiled LangGraph runnable.
+    """
+    workflow: StateGraph = StateGraph(GraphState)
+
+    # Nodes
+    workflow.add_node("ingest_user_input", ingest_user_input.make_node())
+    workflow.add_node("detect_topic", detect_topic.make_node())
+    workflow.add_node("retrieve_context", retrieve_context.make_node(cache_client))
+    workflow.add_node("classify_intent", classify_intent.make_node())
+    workflow.add_node("llm_tool_selection", llm_tool_selection.make_node(selector))
+    workflow.add_node("mcp_tool_invocation", mcp_tool_invocation.make_node(executor))
+    workflow.add_node("llm_response_synthesis", llm_response_synthesis.make_node(synthesizer))
+    workflow.add_node("finalize_response", finalize_response.make_node(db_client=db_client))
+
+    # Edges
+    workflow.set_entry_point("ingest_user_input")
+    workflow.add_edge("ingest_user_input", "detect_topic")
+    workflow.add_conditional_edges(
+        "detect_topic",
+        after_topic_detection,
+        {
+            "retrieve_context": "retrieve_context",
+            "classify_intent": "classify_intent",
+        },
+    )
+    workflow.add_edge("retrieve_context", "classify_intent")
+    workflow.add_conditional_edges(
+        "classify_intent",
+        after_intent_classification,
+        {
+            "mcp_tool_invocation": "mcp_tool_invocation",
+            "llm_tool_selection": "llm_tool_selection",
+        },
+    )
+    workflow.add_conditional_edges(
+        "llm_tool_selection",
+        after_tool_selection,
+        {
+            "mcp_tool_invocation": "mcp_tool_invocation",
+            "finalize_response": "finalize_response",
+        },
+    )
+    workflow.add_conditional_edges(
+        "mcp_tool_invocation",
+        after_tool_invocation,
+        {"llm_response_synthesis": "llm_response_synthesis"},
+    )
+    workflow.add_edge("llm_response_synthesis", "finalize_response")
+    workflow.add_edge("finalize_response", END)
+
+    log.info("graph_compiled", mode="context_aware")
     return workflow.compile()

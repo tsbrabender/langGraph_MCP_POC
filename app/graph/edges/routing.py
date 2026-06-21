@@ -26,6 +26,15 @@ def after_tool_invocation(state: GraphState) -> str:
     return "llm_response_synthesis"
 
 
+def after_topic_detection(state: GraphState) -> str:
+    """Route after detect_topic (context-aware graph only).
+
+    - If a topic was detected → retrieve_context (fetch external resources)
+    - Otherwise             → classify_intent (proceed without external context)
+    """
+    return "retrieve_context" if state.get("topic") else "classify_intent"
+
+
 def after_intent_classification(state: GraphState) -> str:
     """Route after classify_intent (hybrid graph only).
 

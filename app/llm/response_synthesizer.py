@@ -53,14 +53,17 @@ class ResponseSynthesizer:
         tool_name: str,
         tool_output: Any,
         state_context: dict[str, Any] | None = None,
+        context_documents: list[dict[str, Any]] | None = None,
     ) -> list[dict]:
         """Build the Ollama chat messages for the response-synthesis prompt.
 
         Args:
-            user_input: The original user request.
-            tool_name: Name of the MCP tool that produced the output.
-            tool_output: Structured output returned by the tool (any JSON-serializable value).
-            state_context: Optional extra fields from graph state for additional context.
+            user_input:         The original user request.
+            tool_name:          Name of the MCP tool that produced the output.
+            tool_output:        Structured output returned by the tool.
+            state_context:      Optional extra fields from graph state.
+            context_documents:  Optional list of fetched external resources
+                                [{"url": ..., "content": ...}] from retrieve_context.
 
         Returns:
             A list of OpenAI-style message dicts ready to send to Ollama.
@@ -76,6 +79,17 @@ class ResponseSynthesizer:
             f"Tool used: {tool_name}\n\n"
             f"Tool output:\n```json\n{tool_output_str}\n```"
         )
+
+        if context_documents:
+            docs_with_content = [d for d in context_documents if d.get("content")]
+            if docs_with_content:
+                sections: list[str] = []
+                for doc in docs_with_content:
+                    sections.append(f"Source: {doc['url']}\n\n{doc['content']}")
+                user_content += (
+                    "\n\n---\nExternal reference material retrieved for this topic:\n\n"
+                    + "\n\n---\n".join(sections)
+                )
 
         if state_context:
             user_content += (
@@ -95,15 +109,18 @@ class ResponseSynthesizer:
         tool_output: Any,
         state_context: dict[str, Any] | None = None,
         model: str | None = None,
+        context_documents: list[dict[str, Any]] | None = None,
     ) -> str:
         """Produce a natural-language response grounded in tool output.
 
         Args:
-            user_input: The original user request.
-            tool_name: Name of the MCP tool that was called.
-            tool_output: Structured output returned by the MCP tool.
-            state_context: Optional additional fields from graph state.
-            model: Optional Ollama model name override; falls back to client default.
+            user_input:         The original user request.
+            tool_name:          Name of the MCP tool that was called.
+            tool_output:        Structured output returned by the MCP tool.
+            state_context:      Optional additional fields from graph state.
+            model:              Optional Ollama model name override.
+            context_documents:  Optional list of external resource documents
+                                to include as reference material in the prompt.
 
         Returns:
             A natural-language string suitable for presenting to the user.
@@ -111,8 +128,16 @@ class ResponseSynthesizer:
         Raises:
             ResponseSynthesisError: If the LLM returns an empty or whitespace-only response.
         """
-        messages = self.build_messages(user_input, tool_name, tool_output, state_context)
-        log.info("response_synthesizer_start", user_input=user_input[:120], tool_name=tool_name, model=model)
+        messages = self.build_messages(
+            user_input, tool_name, tool_output, state_context, context_documents
+        )
+        log.info(
+            "response_synthesizer_start",
+            user_input=user_input[:120],
+            tool_name=tool_name,
+            model=model,
+            context_doc_count=len(context_documents) if context_documents else 0,
+        )
 
         raw = await self._llm.chat(messages, model=model)
         response = raw.strip()

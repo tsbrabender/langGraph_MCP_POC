@@ -92,22 +92,66 @@ ollama pull llama3.2
 
 ---
 
+## Virtual environment setup
+
+A virtual environment keeps the project's dependencies isolated from your system Python. Complete this once before the quick-start steps below.
+
+**Windows (PowerShell)**
+```powershell
+# Create the environment
+python -m venv .venv
+
+# Activate it
+.venv\Scripts\Activate.ps1
+
+# If PowerShell blocks the script, run this first (once per machine):
+Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
+```
+
+**macOS / Linux**
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+```
+
+Once the environment is active your prompt shows `(.venv)`. Install all dependencies into it:
+
+```bash
+pip install -e ".[dev]"
+```
+
+**Deactivating and reactivating**
+
+```bash
+deactivate               # leave the environment
+source .venv/bin/activate  # re-enter (macOS/Linux)
+.venv\Scripts\Activate.ps1 # re-enter (Windows)
+```
+
+> **VS Code** — after creating the environment, press `Ctrl+Shift+P` → **Python: Select Interpreter** and choose the `.venv` entry. The IDE will then use the correct interpreter for IntelliSense, linting, and the integrated terminal.
+
+---
+
 ## Quick start — local (direct mode, no Redis)
 
 ```bash
-# 1. Clone and install
+# 1. Activate your virtual environment (if not already active)
+source .venv/bin/activate        # macOS/Linux
+# .venv\Scripts\Activate.ps1    # Windows
+
+# 2. Install dependencies (first time only, or after pulling new changes)
 pip install -e ".[dev]"
 
-# 2. Configure
+# 3. Configure
 cp .env.example .env            # edit if Ollama runs on a non-default port
 
-# 3. Start Ollama (separate terminal or background process)
+# 4. Start Ollama (separate terminal or background process)
 ollama serve
 
-# 4. Start the web UI
+# 5. Start the web UI
 uvicorn app.ui.api:app --reload
 
-# 5. Open http://localhost:8000 in a browser
+# 6. Open http://localhost:8000 in a browser
 ```
 
 Try: `list files`, `read hello.txt`, `find *.json`, `summarise example.json`

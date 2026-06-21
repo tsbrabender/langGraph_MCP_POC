@@ -10,8 +10,12 @@ from typing import Any
 
 from app.mcp_server.tools import (
     extract_metadata,
+    fetch_web_resource,
+    get_cached_resource,
+    get_topic_resources,
     list_files,
     read_file,
+    refresh_cache,
     search_files,
     summarize_file,
 )
@@ -26,12 +30,19 @@ class MCPExecutor:
 
     Args:
         sandbox_root: Absolute path to the file-system sandbox.
-        llm_client: OllamaClient instance, required only for the summarize_file tool.
+        llm_client:   OllamaClient instance, required only for the summarize_file tool.
+        cache_client: Cache backend (SQLiteCacheClient), required for context retrieval tools.
     """
 
-    def __init__(self, sandbox_root: Path, llm_client: Any | None = None) -> None:
+    def __init__(
+        self,
+        sandbox_root: Path,
+        llm_client: Any | None = None,
+        cache_client: Any | None = None,
+    ) -> None:
         self._sandbox_root = sandbox_root
         self._llm = llm_client
+        self._cache = cache_client
 
     async def execute(self, tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         """Dispatch a tool call and return its output as a plain dict.
@@ -78,6 +89,30 @@ class MCPExecutor:
                     path=arguments["path"],
                     sandbox_root=self._sandbox_root,
                     llm=self._llm,
+                )
+            case "get_topic_resources":
+                result = await get_topic_resources.run(topic=arguments["topic"])
+            case "fetch_web_resource":
+                result = await fetch_web_resource.run(url=arguments["url"])
+            case "get_cached_resource":
+                if self._cache is None:
+                    raise MCPToolError(
+                        "get_cached_resource requires a cache client but none was provided to MCPExecutor"
+                    )
+                result = await get_cached_resource.run(
+                    url=arguments["url"],
+                    cache_client=self._cache,
+                )
+            case "refresh_cache":
+                if self._cache is None:
+                    raise MCPToolError(
+                        "refresh_cache requires a cache client but none was provided to MCPExecutor"
+                    )
+                result = await refresh_cache.run(
+                    url=arguments["url"],
+                    ttl_seconds=arguments.get("ttl_seconds", 21600),
+                    cache_client=self._cache,
+                    fetcher=fetch_web_resource.run,
                 )
             case _:
                 raise MCPToolError(f"Unknown tool: '{tool_name}'")

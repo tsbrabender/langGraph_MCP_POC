@@ -1,0 +1,44 @@
+topics:
+  dyslexia:
+    keywords:
+      - dyslexia
+      - reading disorder
+      - reading difficulty
+      - phonological awareness
+    urls:
+      - "https://ldaamerica.org/disabilities/dyslexia/"
+      - "https://www.understood.org/articles/what-is-dyslexia"
+    ttl_seconds: 21600   # 6 hours — relatively stable reference content
+
+  adhd:
+    keywords:
+      - adhd
+      - attention deficit
+      - hyperactivity disorder
+      - attention disorder
+    urls:
+      - "https://chadd.org/about-adhd/overview/"
+      - "https://www.cdc.gov/ncbddd/adhd/facts.html"
+    ttl_seconds: 21600
+
+  autism:
+    keywords:
+      - autism
+      - autism spectrum
+      - asd
+      - asperger
+    urls:
+      - "https://www.autismspeaks.org/what-autism"
+      - "https://www.cdc.gov/ncbddd/autism/facts.html"
+    ttl_seconds: 21600
+
+  anxiety:
+    keywords:
+      - anxiety
+      - anxiety disorder
+      - generalized anxiety
+      - social anxiety
+    urls:
+      - "https://adaa.org/understanding-anxiety"
+      - "https://www.nimh.nih.gov/health/topics/anxiety-disorders"
+    ttl_seconds: 3600    # 1 hour — more frequently updated health guidance
